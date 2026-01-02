@@ -1,0 +1,79 @@
+[package]
+name = "edge-proxy"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+
+[[bin]]
+name = "edge-proxy-render-config"
+path = "src/bin/render_config.rs"
+
+[[bin]]
+name = "edge-proxy-benchmark"
+path = "src/bin/benchmark.rs"
+
+[dependencies]
+# Web framework
+axum = { version = "0.7", features = ["macros"] }
+tokio = { version = "1", features = ["full"] }
+tower = "0.4"
+tower-http = { version = "0.5", features = ["compression-gzip", "cors", "trace"] }
+
+# HTTP client for polling
+reqwest = { version = "0.12", features = ["json", "gzip"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Configuration
+config = "0.14"
+
+# Logging and tracing
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Error handling
+thiserror = "1.0"
+anyhow = "1.0"
+
+# Date/time
+chrono = { version = "0.4", features = ["serde"] }
+
+# Async utilities
+async-trait = "0.1"
+futures = "0.3"
+
+# LRU cache
+lru = "0.12"
+
+# HTTP utilities
+http = "1.0"
+hyper = "1.0"
+
+# Validation
+validator = { version = "0.18", features = ["derive"] }
+
+# Environment variables
+dotenvy = "0.15"
+
+# Flagsmith flag engine
+flagsmith-flag-engine = "0.5"
+
+[dev-dependencies]
+# Testing
+axum-test = "15.0"
+mockall = "0.13"
+tokio-test = "0.4"
+wiremock = "0.6"
+criterion = { version = "0.5", features = ["async_tokio"] }
+
+[[bench]]
+name = "flag_evaluation"
+harness = false
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
