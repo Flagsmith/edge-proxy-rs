@@ -27,7 +27,7 @@ impl From<&FlagResult> for APIFeatureState {
             feature: APIFeature {
                 id: flag_result.metadata.feature_id as i64,
                 name: flag_result.name.clone(),
-                feature_type: Cow::Borrowed("STANDARD"),
+                feature_type: Cow::Owned(flag_result.metadata.feature_type.clone()),
             },
             feature_state_value: json_value,
         }
