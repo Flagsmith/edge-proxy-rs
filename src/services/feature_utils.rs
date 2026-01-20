@@ -25,7 +25,10 @@ mod tests {
                 value: format!("value{}", id),
             },
             reason: "DEFAULT".to_string(),
-            metadata: FeatureMetadata { feature_id: id },
+            metadata: FeatureMetadata {
+                feature_id: id,
+                feature_type: "STANDARD".to_string(),
+            },
         }
     }
 
