@@ -255,7 +255,7 @@ impl EnvironmentService {
                 EdgeProxyError::ServiceUnavailable("Environment not loaded".to_string())
             })?;
 
-        let evaluation_result = get_evaluation_result(&context);
+        let evaluation_result = get_evaluation_result(&*context);
 
         let mut flag_results: Vec<FlagResult> = evaluation_result.flags.into_values().collect();
 
@@ -341,7 +341,7 @@ impl EnvironmentService {
             identity.traits.iter().map(Into::into).collect();
 
         let context_with_identity =
-            add_identity_to_context(&context, &identity.identifier, &flagsmith_traits);
+            add_identity_to_context(&*context, &identity.identifier, &flagsmith_traits);
 
         let evaluation_result = get_evaluation_result(&context_with_identity);
 

@@ -14,8 +14,10 @@ pub trait EnvironmentsCache: Send + Sync {
     /// Returns Arc to avoid cloning large JSON on every request
     async fn get_environment(&self, environment_key: &str) -> Option<Arc<Value>>;
 
-    /// Get the pre-computed evaluation context (for flag evaluation)
-    async fn get_context(&self, environment_key: &str) -> Option<EngineEvaluationContext>;
+    /// Get the pre-computed evaluation context (for flag evaluation).
+    /// Returns an Arc so the caller doesn't pay a deep clone per request —
+    /// the context is read-heavy and only replaced on polling-interval refresh.
+    async fn get_context(&self, environment_key: &str) -> Option<Arc<EngineEvaluationContext>>;
 
     /// Store environment document and compute context. Returns true if changed.
     async fn put_environment(&self, environment_key: &str, document: Value) -> bool;
@@ -29,8 +31,10 @@ pub struct LocalMemEnvironmentsCache {
     /// Raw environment documents (for /environment-document endpoint)
     /// Stored as Arc<Value> to avoid cloning large JSON on every request
     environments: Arc<RwLock<HashMap<String, Arc<Value>>>>,
-    /// Pre-computed evaluation contexts (for flag evaluation)
-    contexts: Arc<RwLock<HashMap<String, EngineEvaluationContext>>>,
+    /// Pre-computed evaluation contexts (for flag evaluation).
+    /// Stored as Arc so readers share the same allocation — avoids a deep
+    /// clone of the full context (features + segments) per request.
+    contexts: Arc<RwLock<HashMap<String, Arc<EngineEvaluationContext>>>>,
     /// Identity overrides extracted from environments
     identity_overrides: Arc<RwLock<HashMap<String, HashMap<String, Value>>>>,
 }
@@ -52,9 +56,9 @@ impl EnvironmentsCache for LocalMemEnvironmentsCache {
         environments.get(environment_key).cloned() // Clones Arc (cheap), not Value
     }
 
-    async fn get_context(&self, environment_key: &str) -> Option<EngineEvaluationContext> {
+    async fn get_context(&self, environment_key: &str) -> Option<Arc<EngineEvaluationContext>> {
         let contexts = self.contexts.read().await;
-        contexts.get(environment_key).cloned()
+        contexts.get(environment_key).cloned() // Arc clone, not deep clone
     }
 
     async fn put_environment(&self, environment_key: &str, document: Value) -> bool {
@@ -89,7 +93,7 @@ impl EnvironmentsCache for LocalMemEnvironmentsCache {
             if let Ok(environment) = serde_json::from_value::<Environment>(document.clone()) {
                 let flagsmith_env: FlagsmithEnvironment = environment.to_flagsmith_environment();
                 let context = environment_to_context(flagsmith_env);
-                contexts.insert(environment_key.to_string(), context);
+                contexts.insert(environment_key.to_string(), Arc::new(context));
             }
 
             environments.insert(environment_key.to_string(), Arc::new(document));
