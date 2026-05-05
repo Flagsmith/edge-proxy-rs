@@ -1,18 +1,25 @@
 use async_trait::async_trait;
+use bytes::Bytes;
 use flagsmith_flag_engine::engine_eval::{EngineEvaluationContext, environment_to_context};
 use flagsmith_flag_engine::environments::Environment as FlagsmithEnvironment;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
+use tracing::error;
 
 use crate::models::engine::Environment;
 
 #[async_trait]
 pub trait EnvironmentsCache: Send + Sync {
-    /// Get the raw environment document (for /environment-document endpoint)
-    /// Returns Arc to avoid cloning large JSON on every request
+    /// Get the raw environment document (for flag evaluation paths that
+    /// need the parsed JSON tree). Returns Arc to avoid cloning.
     async fn get_environment(&self, environment_key: &str) -> Option<Arc<Value>>;
+
+    /// Get the pre-serialized JSON bytes for the /environment-document
+    /// endpoint. These are produced once when the document is stored, so
+    /// the request path is a refcount bump.
+    async fn get_environment_bytes(&self, environment_key: &str) -> Option<Bytes>;
 
     /// Get the pre-computed evaluation context (for flag evaluation)
     async fn get_context(&self, environment_key: &str) -> Option<EngineEvaluationContext>;
@@ -26,9 +33,11 @@ pub trait EnvironmentsCache: Send + Sync {
 
 #[derive(Clone, Default)]
 pub struct LocalMemEnvironmentsCache {
-    /// Raw environment documents (for /environment-document endpoint)
-    /// Stored as Arc<Value> to avoid cloning large JSON on every request
+    /// Raw environment documents (kept parsed for evaluation paths).
     environments: Arc<RwLock<HashMap<String, Arc<Value>>>>,
+    /// Pre-serialized JSON bytes for `/environment-document` responses.
+    /// Populated on `put_environment`; cheap to clone (refcounted).
+    environment_bytes: Arc<RwLock<HashMap<String, Bytes>>>,
     /// Pre-computed evaluation contexts (for flag evaluation)
     contexts: Arc<RwLock<HashMap<String, EngineEvaluationContext>>>,
     /// Identity overrides extracted from environments
@@ -39,6 +48,7 @@ impl LocalMemEnvironmentsCache {
     pub fn new() -> Self {
         Self {
             environments: Arc::new(RwLock::new(HashMap::new())),
+            environment_bytes: Arc::new(RwLock::new(HashMap::new())),
             contexts: Arc::new(RwLock::new(HashMap::new())),
             identity_overrides: Arc::new(RwLock::new(HashMap::new())),
         }
@@ -52,6 +62,11 @@ impl EnvironmentsCache for LocalMemEnvironmentsCache {
         environments.get(environment_key).cloned() // Clones Arc (cheap), not Value
     }
 
+    async fn get_environment_bytes(&self, environment_key: &str) -> Option<Bytes> {
+        let environment_bytes = self.environment_bytes.read().await;
+        environment_bytes.get(environment_key).cloned() // Bytes clone is a refcount bump
+    }
+
     async fn get_context(&self, environment_key: &str) -> Option<EngineEvaluationContext> {
         let contexts = self.contexts.read().await;
         contexts.get(environment_key).cloned()
@@ -59,6 +74,7 @@ impl EnvironmentsCache for LocalMemEnvironmentsCache {
 
     async fn put_environment(&self, environment_key: &str, document: Value) -> bool {
         let mut environments = self.environments.write().await;
+        let mut environment_bytes = self.environment_bytes.write().await;
         let mut contexts = self.contexts.write().await;
         let mut identity_overrides = self.identity_overrides.write().await;
 
@@ -90,6 +106,22 @@ impl EnvironmentsCache for LocalMemEnvironmentsCache {
                 let flagsmith_env: FlagsmithEnvironment = environment.to_flagsmith_environment();
                 let context = environment_to_context(flagsmith_env);
                 contexts.insert(environment_key.to_string(), context);
+            }
+
+            // Serialize once here so /environment-document requests are an Arc-clone.
+            // Failure leaves the byte cache empty for this key — handler returns 503.
+            match serde_json::to_vec(&document) {
+                Ok(bytes) => {
+                    environment_bytes.insert(environment_key.to_string(), Bytes::from(bytes));
+                }
+                Err(err) => {
+                    error!(
+                        environment_key,
+                        error = %err,
+                        "failed to serialize environment document for byte cache"
+                    );
+                    environment_bytes.remove(environment_key);
+                }
             }
 
             environments.insert(environment_key.to_string(), Arc::new(document));
