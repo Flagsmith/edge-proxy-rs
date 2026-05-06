@@ -3,6 +3,7 @@ use crate::config::settings::{AppSettings, EnvironmentKeyPair};
 use crate::error::{EdgeProxyError, Result};
 use crate::models::{APIFeatureState, IdentityResponse, IdentityWithTraits};
 use crate::services::feature_utils::filter_out_server_key_only_flag_results;
+use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use flagsmith_flag_engine::engine::get_evaluation_result;
 use flagsmith_flag_engine::engine_eval::{FlagResult, add_identity_to_context};
@@ -211,40 +212,27 @@ impl EnvironmentService {
             .ok_or_else(|| EdgeProxyError::ServiceUnavailable("Environment not loaded".to_string()))
     }
 
-    /// Get pre-serialized environment document bytes with endpoint caching
-    pub async fn get_environment_bytes(&self, environment_key: &str) -> Result<Arc<[u8]>> {
-        if self.endpoint_cache.is_environment_document_cache_enabled() {
-            let cache_key = CacheKey::new(
+    /// Return the pre-serialized JSON bytes for the environment document.
+    ///
+    /// Bytes are produced once when polling refreshes the cache, so the
+    /// request path is a `Bytes` clone (refcount bump).
+    pub async fn get_environment_bytes(&self, environment_key: &str) -> Result<Bytes> {
+        if !self.key_mapping.contains_key(environment_key) {
+            return Err(EdgeProxyError::FlagsmithUnknownKey(
                 environment_key.to_string(),
-                "environment_document".to_string(),
-                "".to_string(),
-            );
-
-            if let Some(cached_bytes) = self
-                .endpoint_cache
-                .get_environment_document(&cache_key)
-                .await
-            {
-                return Ok(cached_bytes);
-            }
+            ));
         }
 
-        let document = self.get_environment(environment_key).await?;
+        let client_key = self
+            .server_to_client
+            .get(environment_key)
+            .map(|s| s.as_str())
+            .unwrap_or(environment_key);
 
-        let bytes: Arc<[u8]> = serde_json::to_vec(&*document)?.into();
-
-        if self.endpoint_cache.is_environment_document_cache_enabled() {
-            let cache_key = CacheKey::new(
-                environment_key.to_string(),
-                "environment_document".to_string(),
-                "".to_string(),
-            );
-            self.endpoint_cache
-                .put_environment_document(cache_key, bytes.clone())
-                .await;
-        }
-
-        Ok(bytes)
+        self.cache
+            .get_environment_bytes(client_key)
+            .await
+            .ok_or_else(|| EdgeProxyError::ServiceUnavailable("Environment not loaded".to_string()))
     }
 
     fn extract_server_key_only_ids(document: &serde_json::Value) -> Vec<u32> {

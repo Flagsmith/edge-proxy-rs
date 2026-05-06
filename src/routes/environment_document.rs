@@ -18,8 +18,8 @@ pub async fn get_environment_document(
         return Err(EdgeProxyError::FlagsmithUnknownKey(environment_key));
     }
 
-    // Get pre-serialized bytes (with endpoint caching if enabled)
+    // Pre-serialized bytes from the environment cache; populated at poll time.
     let body = service.get_environment_bytes(&environment_key).await?;
 
-    Ok(([(header::CONTENT_TYPE, "application/json")], body.to_vec()))
+    Ok(([(header::CONTENT_TYPE, "application/json")], body))
 }

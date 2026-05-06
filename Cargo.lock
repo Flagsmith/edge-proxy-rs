@@ -519,6 +519,7 @@ dependencies = [
  "async-trait",
  "axum",
  "axum-test",
+ "bytes",
  "chrono",
  "flagsmith-flag-engine",
  "http",
