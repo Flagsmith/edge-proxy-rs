@@ -73,12 +73,30 @@ impl EnvironmentsCache for LocalMemEnvironmentsCache {
     }
 
     async fn put_environment(&self, environment_key: &str, document: Value) -> bool {
+        // Skip work entirely when the document is unchanged. A short-lived
+        // read guard on `environments` is enough — the equality check itself
+        // can be expensive on multi-MB Values, but it doesn't block readers.
+        {
+            let environments = self.environments.read().await;
+            if let Some(existing) = environments.get(environment_key) {
+                if existing.as_ref() == &document {
+                    return false;
+                }
+            }
+        }
+
+        // Heavy CPU work runs while `document` is still uniquely owned —
+        // outside any lock — so concurrent flag-evaluation requests aren't
+        // blocked while we serialize a multi-MB document.
+        let bytes_result = serde_json::to_vec(&document);
+
         let mut environments = self.environments.write().await;
         let mut environment_bytes = self.environment_bytes.write().await;
         let mut contexts = self.contexts.write().await;
         let mut identity_overrides = self.identity_overrides.write().await;
 
-        // Check if document changed
+        // Re-check under the write guards in case a concurrent put landed
+        // an identical document between the read and write guards.
         let changed = environments
             .get(environment_key)
             .map(|existing| existing.as_ref() != &document)
@@ -108,9 +126,9 @@ impl EnvironmentsCache for LocalMemEnvironmentsCache {
                 contexts.insert(environment_key.to_string(), context);
             }
 
-            // Serialize once here so /environment-document requests are an Arc-clone.
+            // Pre-serialized so /environment-document requests are a refcount bump.
             // Failure leaves the byte cache empty for this key — handler returns 503.
-            match serde_json::to_vec(&document) {
+            match bytes_result {
                 Ok(bytes) => {
                     environment_bytes.insert(environment_key.to_string(), Bytes::from(bytes));
                 }
