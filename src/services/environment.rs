@@ -1,9 +1,9 @@
 use crate::cache::{EnvironmentsCache, LocalMemEnvironmentsCache};
 use crate::config::settings::AppSettings;
+use crate::environments::{EnvRecord, EnvironmentIndex};
 use crate::error::{EdgeProxyError, Result};
 use crate::models::{APIFeatureState, IdentityResponse, IdentityWithTraits};
 use crate::services::feature_utils::filter_out_server_key_only_flag_results;
-use crate::services::registry::{EnvRecord, EnvironmentRegistry};
 use chrono::{DateTime, Utc};
 use flagsmith_flag_engine::engine::get_evaluation_result;
 use flagsmith_flag_engine::engine_eval::{FlagResult, add_identity_to_context};
@@ -20,7 +20,7 @@ pub struct EnvironmentService {
     client: Client,
     pub settings: AppSettings,
     pub last_updated_at: Arc<RwLock<Option<DateTime<Utc>>>>,
-    registry: EnvironmentRegistry,
+    environments: EnvironmentIndex,
 }
 
 impl EnvironmentService {
@@ -31,14 +31,14 @@ impl EnvironmentService {
             .build()
             .expect("Failed to create HTTP client");
 
-        let registry = EnvironmentRegistry::from_settings(&settings.environment_key_pairs);
+        let environments = EnvironmentIndex::from_settings(&settings.environment_key_pairs);
 
         Self {
             cache: Arc::new(LocalMemEnvironmentsCache::new()),
             client,
             settings,
             last_updated_at: Arc::new(RwLock::new(None)),
-            registry,
+            environments,
         }
     }
 
@@ -51,7 +51,7 @@ impl EnvironmentService {
     pub async fn refresh_environment_caches(&self) -> bool {
         let mut all_success = true;
 
-        for record in self.registry.records() {
+        for record in self.environments.records() {
             match self.fetch_environment(&record).await {
                 Ok(document) => {
                     let changed = self
@@ -84,7 +84,7 @@ impl EnvironmentService {
     /// Forget an environment at runtime, so requests presenting any of its
     /// keys are rejected and nothing stale is served from a cache.
     pub async fn evict_environment(&self, environment_key: &str) {
-        let Some(record) = self.registry.remove(environment_key) else {
+        let Some(record) = self.environments.remove(environment_key) else {
             return;
         };
         self.cache.remove_environment(&record.client_key).await;
@@ -92,7 +92,7 @@ impl EnvironmentService {
     }
 
     fn resolve_key(&self, environment_key: &str) -> Result<Arc<EnvRecord>> {
-        self.registry
+        self.environments
             .resolve(environment_key)
             .ok_or_else(|| EdgeProxyError::FlagsmithUnknownKey(environment_key.to_string()))
     }

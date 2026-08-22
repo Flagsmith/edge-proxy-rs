@@ -5,7 +5,7 @@ use chrono::{DateTime, Utc};
 
 use crate::config::settings::EnvironmentKeyPair;
 
-/// Where the registry learned about an environment.
+/// Where the index learned about an environment.
 ///
 /// Reconciliation against a remote source must never evict `Static`
 /// entries: they come from the local config file, and only a config
@@ -63,15 +63,15 @@ impl EnvRecord {
 /// operation, never across an await, and lookups stay callable from
 /// synchronous code.
 #[derive(Default)]
-pub struct EnvironmentRegistry {
+pub struct EnvironmentIndex {
     by_key: RwLock<HashMap<String, Arc<EnvRecord>>>,
 }
 
-impl EnvironmentRegistry {
+impl EnvironmentIndex {
     pub fn from_settings(pairs: &[EnvironmentKeyPair]) -> Self {
-        let registry = Self::default();
+        let index = Self::default();
         for pair in pairs {
-            registry.insert(EnvRecord {
+            index.insert(EnvRecord {
                 client_key: pair.client_side_key.clone(),
                 server_keys: vec![ServerKey {
                     key: pair.server_side_key.clone(),
@@ -81,14 +81,14 @@ impl EnvironmentRegistry {
                 source: EnvSource::Static,
             });
         }
-        registry
+        index
     }
 
     /// Resolve a presented key — client- or server-side — to its record.
     pub fn resolve(&self, key: &str) -> Option<Arc<EnvRecord>> {
         self.by_key
             .read()
-            .expect("registry lock poisoned")
+            .expect("environment index lock poisoned")
             .get(key)
             .cloned()
     }
@@ -97,7 +97,10 @@ impl EnvironmentRegistry {
     /// index entries for server keys the previous version no longer has.
     pub fn insert(&self, record: EnvRecord) {
         let record = Arc::new(record);
-        let mut by_key = self.by_key.write().expect("registry lock poisoned");
+        let mut by_key = self
+            .by_key
+            .write()
+            .expect("environment index lock poisoned");
 
         if let Some(previous) = by_key.get(&record.client_key).cloned() {
             for server_key in &previous.server_keys {
@@ -114,7 +117,10 @@ impl EnvironmentRegistry {
     /// Remove the record `key` resolves to (any of its keys works),
     /// returning it so the caller can clear per-key caches.
     pub fn remove(&self, key: &str) -> Option<Arc<EnvRecord>> {
-        let mut by_key = self.by_key.write().expect("registry lock poisoned");
+        let mut by_key = self
+            .by_key
+            .write()
+            .expect("environment index lock poisoned");
         let record = by_key.get(key).cloned()?;
 
         by_key.remove(&record.client_key);
@@ -128,7 +134,7 @@ impl EnvironmentRegistry {
     /// Snapshot of the distinct records, ordered by client key so
     /// callers iterate deterministically.
     pub fn records(&self) -> Vec<Arc<EnvRecord>> {
-        let by_key = self.by_key.read().expect("registry lock poisoned");
+        let by_key = self.by_key.read().expect("environment index lock poisoned");
         let mut records: Vec<Arc<EnvRecord>> = by_key
             .iter()
             .filter(|(key, record)| key.as_str() == record.client_key)
@@ -177,11 +183,11 @@ mod tests {
     #[test]
     fn from_settings_resolves_both_keys_to_the_same_static_record() {
         // Given
-        let registry = EnvironmentRegistry::from_settings(&[pair("client_a", "ser.a")]);
+        let index = EnvironmentIndex::from_settings(&[pair("client_a", "ser.a")]);
 
         // When
-        let by_client = registry.resolve("client_a").unwrap();
-        let by_server = registry.resolve("ser.a").unwrap();
+        let by_client = index.resolve("client_a").unwrap();
+        let by_server = index.resolve("ser.a").unwrap();
 
         // Then
         assert!(Arc::ptr_eq(&by_client, &by_server));
@@ -192,59 +198,59 @@ mod tests {
 
     #[test]
     fn resolve_unknown_key_returns_none() {
-        let registry = EnvironmentRegistry::from_settings(&[pair("client_a", "ser.a")]);
-        assert!(registry.resolve("nope").is_none());
+        let index = EnvironmentIndex::from_settings(&[pair("client_a", "ser.a")]);
+        assert!(index.resolve("nope").is_none());
     }
 
     #[test]
     fn insert_replaces_record_and_drops_stale_server_key_index() {
         // Given
-        let registry = EnvironmentRegistry::from_settings(&[pair("client_a", "ser.old")]);
+        let index = EnvironmentIndex::from_settings(&[pair("client_a", "ser.old")]);
 
         // When the environment's server key is rotated
-        registry.insert(EnvRecord {
+        index.insert(EnvRecord {
             client_key: "client_a".to_string(),
             server_keys: vec![server_key("ser.new")],
             source: EnvSource::Inventory,
         });
 
         // Then
-        assert!(registry.resolve("ser.old").is_none());
-        assert_eq!(registry.resolve("ser.new").unwrap().client_key, "client_a");
-        assert_eq!(registry.records().len(), 1);
+        assert!(index.resolve("ser.old").is_none());
+        assert_eq!(index.resolve("ser.new").unwrap().client_key, "client_a");
+        assert_eq!(index.records().len(), 1);
     }
 
     #[test]
     fn remove_by_any_key_clears_every_index_entry() {
         // Given a record with two server keys
-        let registry = EnvironmentRegistry::default();
-        registry.insert(EnvRecord {
+        let index = EnvironmentIndex::default();
+        index.insert(EnvRecord {
             client_key: "client_a".to_string(),
             server_keys: vec![server_key("ser.one"), server_key("ser.two")],
             source: EnvSource::Inventory,
         });
 
         // When removed via one of its server keys
-        let removed = registry.remove("ser.two").unwrap();
+        let removed = index.remove("ser.two").unwrap();
 
         // Then
         assert_eq!(removed.client_key, "client_a");
-        assert!(registry.resolve("client_a").is_none());
-        assert!(registry.resolve("ser.one").is_none());
-        assert!(registry.resolve("ser.two").is_none());
-        assert!(registry.remove("client_a").is_none());
+        assert!(index.resolve("client_a").is_none());
+        assert!(index.resolve("ser.one").is_none());
+        assert!(index.resolve("ser.two").is_none());
+        assert!(index.remove("client_a").is_none());
     }
 
     #[test]
     fn records_returns_one_entry_per_environment_sorted_by_client_key() {
         // Given
-        let registry = EnvironmentRegistry::from_settings(&[
+        let index = EnvironmentIndex::from_settings(&[
             pair("client_b", "ser.b"),
             pair("client_a", "ser.a"),
         ]);
 
         // When
-        let records = registry.records();
+        let records = index.records();
 
         // Then
         let client_keys: Vec<&str> = records.iter().map(|r| r.client_key.as_str()).collect();

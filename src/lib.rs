@@ -1,5 +1,6 @@
 pub mod cache;
 pub mod config;
+pub mod environments;
 pub mod error;
 pub mod models;
 pub mod routes;
