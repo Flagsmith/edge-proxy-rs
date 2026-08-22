@@ -1,4 +1,4 @@
-use edge_proxy::cache::{EnvironmentsCache, LocalMemEnvironmentsCache};
+use edge_proxy::cache::{CacheKey, EnvironmentsCache, LocalMemEnvironmentsCache};
 use edge_proxy::config::settings::{
     AppSettings, EndpointCacheSettings, EndpointCachesSettings, EnvironmentKeyPair,
 };
@@ -153,7 +153,7 @@ async fn test_removal_clears_primed_environment_document_cache() {
 }
 
 #[tokio::test]
-async fn test_removing_an_unknown_key_is_a_noop() {
+async fn test_removing_an_unknown_key_leaves_other_environments_alone() {
     // Given
     let (service, client_key) = create_loaded_service().await;
 
@@ -162,4 +162,22 @@ async fn test_removing_an_unknown_key_is_a_noop() {
 
     // Then
     assert!(service.get_environment(&client_key).await.is_ok());
+}
+
+#[tokio::test]
+async fn test_removing_an_unknown_key_still_clears_cache_residue_under_it() {
+    // Given residue a lost race left in the endpoint cache under a key
+    // that no longer resolves
+    let (service, _client_key) = create_loaded_service().await;
+    let cache_key = CacheKey::new("ghost".to_string(), "flags".to_string(), String::new());
+    service
+        .endpoint_cache
+        .put_flags(cache_key.clone(), serde_json::json!([]))
+        .await;
+
+    // When removal is repeated for the unresolvable key
+    service.remove_environment("ghost").await;
+
+    // Then the residue is gone
+    assert!(service.endpoint_cache.get_flags(&cache_key).await.is_none());
 }

@@ -59,6 +59,8 @@ impl EnvironmentService {
                     if changed {
                         info!("Environment cache updated for key: {}", keys.client_key);
                     }
+
+                    self.discard_environment_if_removed(&keys).await;
                 }
                 Err(e) => {
                     error!(
@@ -82,10 +84,23 @@ impl EnvironmentService {
     /// keys are rejected and nothing stale is served from a cache.
     pub async fn remove_environment(&self, environment_key: &str) {
         let Some(keys) = self.environments.remove(environment_key) else {
+            // Unknown key: clear the cache under it anyway, so a repeated
+            // removal can clean up residue left by a lost race with an
+            // in-flight poll.
+            self.cache.remove_environment(environment_key).await;
             return;
         };
         self.cache.remove_environment(&keys.client_key).await;
         info!("Environment removed for key: {}", keys.client_key);
+    }
+
+    /// The poll-loop counterpart: the loop iterates a snapshot, so a
+    /// removal completing mid-fetch would have its environment's data
+    /// re-inserted by put_environment and pinned until restart.
+    async fn discard_environment_if_removed(&self, keys: &EnvironmentKeys) {
+        if self.environments.resolve(&keys.client_key).is_none() {
+            self.cache.remove_environment(&keys.client_key).await;
+        }
     }
 
     fn resolve_key(&self, environment_key: &str) -> Result<Arc<EnvironmentKeys>> {
@@ -417,7 +432,55 @@ fn is_next_rel(params: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::settings::EnvironmentKeyPair;
     use reqwest::header::{HeaderMap, HeaderValue, LINK};
+
+    fn service(pairs: Vec<EnvironmentKeyPair>) -> EnvironmentService {
+        EnvironmentService::new(AppSettings {
+            environment_key_pairs: pairs,
+            ..AppSettings::default()
+        })
+    }
+
+    #[tokio::test]
+    async fn discard_environment_if_removed_clears_a_poll_reinsertion() {
+        // Given a document a racing poll re-inserted after removal
+        let service = service(vec![]);
+        let keys = EnvironmentKeys {
+            client_key: "client".to_string(),
+            server_keys: vec![],
+        };
+        service
+            .cache
+            .put_environment("client", serde_json::json!({"api_key": "client"}))
+            .await;
+
+        // When
+        service.discard_environment_if_removed(&keys).await;
+
+        // Then
+        assert!(service.cache.get_environment("client").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn discard_environment_if_removed_keeps_documents_for_known_keys() {
+        // Given a freshly polled document for a configured environment
+        let service = service(vec![EnvironmentKeyPair {
+            client_side_key: "client".to_string(),
+            server_side_key: "ser.k".to_string(),
+        }]);
+        let keys = service.environments.resolve("client").unwrap();
+        service
+            .cache
+            .put_environment("client", serde_json::json!({"api_key": "client"}))
+            .await;
+
+        // When
+        service.discard_environment_if_removed(&keys).await;
+
+        // Then
+        assert!(service.cache.get_environment("client").await.is_some());
+    }
 
     fn link(value: &str) -> HeaderMap {
         let mut h = HeaderMap::new();
