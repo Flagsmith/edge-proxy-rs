@@ -11,7 +11,7 @@ use crate::config::settings::EnvironmentKeyPair;
 /// entries: they come from the local config file, and only a config
 /// change removes them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EnvSource {
+pub enum EnvironmentSource {
     /// Configured in `environment_key_pairs`.
     Static,
     /// Learned lazily by serving a previously unknown server-side key.
@@ -36,17 +36,17 @@ impl ServerKey {
     }
 }
 
-/// One environment the proxy serves: its client-side key and every
-/// server-side key that can authenticate for it upstream (multiple
-/// during rotation).
+/// The key set of one environment the proxy serves: its client-side key
+/// and every server-side key that can authenticate for it upstream
+/// (multiple during rotation), plus where the proxy learned about it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EnvRecord {
+pub struct EnvironmentKeys {
     pub client_key: String,
     pub server_keys: Vec<ServerKey>,
-    pub source: EnvSource,
+    pub source: EnvironmentSource,
 }
 
-impl EnvRecord {
+impl EnvironmentKeys {
     /// The first server-side key still usable for upstream fetches.
     pub fn valid_server_key(&self) -> Option<&ServerKey> {
         self.server_keys.iter().find(|key| key.is_valid())
@@ -55,8 +55,8 @@ impl EnvRecord {
 
 /// The runtime-mutable set of environments the proxy serves.
 ///
-/// Every record is indexed under its client key *and* each of its server
-/// keys, so a single lookup resolves whichever kind of key a request
+/// Every environment is indexed under its client key *and* each of its
+/// server keys, so a single lookup resolves whichever kind of key a request
 /// presents.
 ///
 /// Uses `std::sync::RwLock`, not tokio's: guards are held only for a map
@@ -64,28 +64,29 @@ impl EnvRecord {
 /// synchronous code.
 #[derive(Default)]
 pub struct EnvironmentIndex {
-    by_key: RwLock<HashMap<String, Arc<EnvRecord>>>,
+    by_key: RwLock<HashMap<String, Arc<EnvironmentKeys>>>,
 }
 
 impl EnvironmentIndex {
     pub fn from_settings(pairs: &[EnvironmentKeyPair]) -> Self {
         let index = Self::default();
         for pair in pairs {
-            index.insert(EnvRecord {
+            index.insert(EnvironmentKeys {
                 client_key: pair.client_side_key.clone(),
                 server_keys: vec![ServerKey {
                     key: pair.server_side_key.clone(),
                     active: true,
                     expires_at: None,
                 }],
-                source: EnvSource::Static,
+                source: EnvironmentSource::Static,
             });
         }
         index
     }
 
-    /// Resolve a presented key — client- or server-side — to its record.
-    pub fn resolve(&self, key: &str) -> Option<Arc<EnvRecord>> {
+    /// Resolve a presented key — client- or server-side — to its
+    /// environment's keys.
+    pub fn resolve(&self, key: &str) -> Option<Arc<EnvironmentKeys>> {
         self.by_key
             .read()
             .expect("environment index lock poisoned")
@@ -93,68 +94,69 @@ impl EnvironmentIndex {
             .cloned()
     }
 
-    /// Insert or replace the record for `record.client_key`, dropping
-    /// index entries for server keys the previous version no longer has.
-    pub fn insert(&self, record: EnvRecord) {
-        let record = Arc::new(record);
+    /// Insert or replace an environment's keys, dropping index entries
+    /// for server keys the previous version no longer has.
+    pub fn insert(&self, keys: EnvironmentKeys) {
+        let keys = Arc::new(keys);
         let mut by_key = self
             .by_key
             .write()
             .expect("environment index lock poisoned");
 
-        if let Some(previous) = by_key.get(&record.client_key).cloned() {
+        if let Some(previous) = by_key.get(&keys.client_key).cloned() {
             for server_key in &previous.server_keys {
                 remove_index_entry(&mut by_key, &server_key.key, &previous);
             }
         }
 
-        for server_key in &record.server_keys {
-            by_key.insert(server_key.key.clone(), Arc::clone(&record));
+        for server_key in &keys.server_keys {
+            by_key.insert(server_key.key.clone(), Arc::clone(&keys));
         }
-        by_key.insert(record.client_key.clone(), record);
+        by_key.insert(keys.client_key.clone(), keys);
     }
 
-    /// Remove the record `key` resolves to (any of its keys works),
-    /// returning it so the caller can clear per-key caches.
-    pub fn remove(&self, key: &str) -> Option<Arc<EnvRecord>> {
+    /// Remove the environment `key` resolves to (any of its keys works),
+    /// returning its keys so the caller can clear per-key caches.
+    pub fn remove(&self, key: &str) -> Option<Arc<EnvironmentKeys>> {
         let mut by_key = self
             .by_key
             .write()
             .expect("environment index lock poisoned");
-        let record = by_key.get(key).cloned()?;
+        let keys = by_key.get(key).cloned()?;
 
-        by_key.remove(&record.client_key);
-        for server_key in &record.server_keys {
-            remove_index_entry(&mut by_key, &server_key.key, &record);
+        by_key.remove(&keys.client_key);
+        for server_key in &keys.server_keys {
+            remove_index_entry(&mut by_key, &server_key.key, &keys);
         }
 
-        Some(record)
+        Some(keys)
     }
 
-    /// Snapshot of the distinct records, ordered by client key so
-    /// callers iterate deterministically.
-    pub fn records(&self) -> Vec<Arc<EnvRecord>> {
+    /// Point-in-time snapshot of every environment's keys, ordered by
+    /// client key so callers iterate deterministically.
+    pub fn snapshot(&self) -> Vec<Arc<EnvironmentKeys>> {
         let by_key = self.by_key.read().expect("environment index lock poisoned");
-        let mut records: Vec<Arc<EnvRecord>> = by_key
+        let mut snapshot: Vec<Arc<EnvironmentKeys>> = by_key
             .iter()
-            .filter(|(key, record)| key.as_str() == record.client_key)
-            .map(|(_, record)| Arc::clone(record))
+            .filter(|(key, keys)| key.as_str() == keys.client_key)
+            .map(|(_, keys)| Arc::clone(keys))
             .collect();
-        records.sort_by(|a, b| a.client_key.cmp(&b.client_key));
-        records
+        snapshot.sort_by(|a, b| a.client_key.cmp(&b.client_key));
+        snapshot
     }
 }
 
-/// Remove `key` only if it still points at `record`, so a record that
-/// (mis)shares a server key with another never drops the other's entry.
+/// Remove `key` only if it still points at `keys`, so an environment
+/// that (mis)shares a server key with another never drops the other's
+/// entry.
 fn remove_index_entry(
-    by_key: &mut HashMap<String, Arc<EnvRecord>>,
+    by_key: &mut HashMap<String, Arc<EnvironmentKeys>>,
     key: &str,
-    record: &Arc<EnvRecord>,
+    keys: &Arc<EnvironmentKeys>,
 ) {
     if by_key
         .get(key)
-        .is_some_and(|indexed| Arc::ptr_eq(indexed, record))
+        .is_some_and(|indexed| Arc::ptr_eq(indexed, keys))
     {
         by_key.remove(key);
     }
@@ -181,7 +183,7 @@ mod tests {
     }
 
     #[test]
-    fn from_settings_resolves_both_keys_to_the_same_static_record() {
+    fn from_settings_resolves_both_keys_to_the_same_static_environment() {
         // Given
         let index = EnvironmentIndex::from_settings(&[pair("client_a", "ser.a")]);
 
@@ -192,7 +194,7 @@ mod tests {
         // Then
         assert!(Arc::ptr_eq(&by_client, &by_server));
         assert_eq!(by_client.client_key, "client_a");
-        assert_eq!(by_client.source, EnvSource::Static);
+        assert_eq!(by_client.source, EnvironmentSource::Static);
         assert!(by_client.valid_server_key().is_some());
     }
 
@@ -203,31 +205,31 @@ mod tests {
     }
 
     #[test]
-    fn insert_replaces_record_and_drops_stale_server_key_index() {
+    fn insert_replaces_keys_and_drops_stale_server_key_index() {
         // Given
         let index = EnvironmentIndex::from_settings(&[pair("client_a", "ser.old")]);
 
         // When the environment's server key is rotated
-        index.insert(EnvRecord {
+        index.insert(EnvironmentKeys {
             client_key: "client_a".to_string(),
             server_keys: vec![server_key("ser.new")],
-            source: EnvSource::Inventory,
+            source: EnvironmentSource::Inventory,
         });
 
         // Then
         assert!(index.resolve("ser.old").is_none());
         assert_eq!(index.resolve("ser.new").unwrap().client_key, "client_a");
-        assert_eq!(index.records().len(), 1);
+        assert_eq!(index.snapshot().len(), 1);
     }
 
     #[test]
     fn remove_by_any_key_clears_every_index_entry() {
-        // Given a record with two server keys
+        // Given an environment with two server keys
         let index = EnvironmentIndex::default();
-        index.insert(EnvRecord {
+        index.insert(EnvironmentKeys {
             client_key: "client_a".to_string(),
             server_keys: vec![server_key("ser.one"), server_key("ser.two")],
-            source: EnvSource::Inventory,
+            source: EnvironmentSource::Inventory,
         });
 
         // When removed via one of its server keys
@@ -242,7 +244,7 @@ mod tests {
     }
 
     #[test]
-    fn records_returns_one_entry_per_environment_sorted_by_client_key() {
+    fn snapshot_returns_one_entry_per_environment_sorted_by_client_key() {
         // Given
         let index = EnvironmentIndex::from_settings(&[
             pair("client_b", "ser.b"),
@@ -250,17 +252,17 @@ mod tests {
         ]);
 
         // When
-        let records = index.records();
+        let snapshot = index.snapshot();
 
         // Then
-        let client_keys: Vec<&str> = records.iter().map(|r| r.client_key.as_str()).collect();
+        let client_keys: Vec<&str> = snapshot.iter().map(|r| r.client_key.as_str()).collect();
         assert_eq!(client_keys, vec!["client_a", "client_b"]);
     }
 
     #[test]
     fn valid_server_key_skips_inactive_and_expired_keys() {
         // Given
-        let record = EnvRecord {
+        let keys = EnvironmentKeys {
             client_key: "client_a".to_string(),
             server_keys: vec![
                 ServerKey {
@@ -279,24 +281,24 @@ mod tests {
                     expires_at: Some(Utc::now() + TimeDelta::days(1)),
                 },
             ],
-            source: EnvSource::Inventory,
+            source: EnvironmentSource::Inventory,
         };
 
         // When / Then
-        assert_eq!(record.valid_server_key().unwrap().key, "ser.valid");
+        assert_eq!(keys.valid_server_key().unwrap().key, "ser.valid");
     }
 
     #[test]
     fn valid_server_key_returns_none_when_no_key_is_usable() {
-        let record = EnvRecord {
+        let keys = EnvironmentKeys {
             client_key: "client_a".to_string(),
             server_keys: vec![ServerKey {
                 key: "ser.inactive".to_string(),
                 active: false,
                 expires_at: None,
             }],
-            source: EnvSource::Inventory,
+            source: EnvironmentSource::Inventory,
         };
-        assert!(record.valid_server_key().is_none());
+        assert!(keys.valid_server_key().is_none());
     }
 }

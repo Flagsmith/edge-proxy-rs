@@ -1,6 +1,6 @@
 use crate::cache::{EnvironmentsCache, LocalMemEnvironmentsCache};
 use crate::config::settings::AppSettings;
-use crate::environments::{EnvRecord, EnvironmentIndex};
+use crate::environments::{EnvironmentIndex, EnvironmentKeys};
 use crate::error::{EdgeProxyError, Result};
 use crate::models::{APIFeatureState, IdentityResponse, IdentityWithTraits};
 use crate::services::feature_utils::filter_out_server_key_only_flag_results;
@@ -51,22 +51,19 @@ impl EnvironmentService {
     pub async fn refresh_environment_caches(&self) -> bool {
         let mut all_success = true;
 
-        for record in self.environments.records() {
-            match self.fetch_environment(&record).await {
+        for keys in self.environments.snapshot() {
+            match self.fetch_environment(&keys).await {
                 Ok(document) => {
-                    let changed = self
-                        .cache
-                        .put_environment(&record.client_key, document)
-                        .await;
+                    let changed = self.cache.put_environment(&keys.client_key, document).await;
 
                     if changed {
-                        info!("Environment cache updated for key: {}", record.client_key);
+                        info!("Environment cache updated for key: {}", keys.client_key);
                     }
                 }
                 Err(e) => {
                     error!(
                         "Failed to fetch environment for key {}: {}",
-                        record.client_key, e
+                        keys.client_key, e
                     );
                     all_success = false;
                 }
@@ -84,30 +81,30 @@ impl EnvironmentService {
     /// Forget an environment at runtime, so requests presenting any of its
     /// keys are rejected and nothing stale is served from a cache.
     pub async fn evict_environment(&self, environment_key: &str) {
-        let Some(record) = self.environments.remove(environment_key) else {
+        let Some(keys) = self.environments.remove(environment_key) else {
             return;
         };
-        self.cache.remove_environment(&record.client_key).await;
-        info!("Environment evicted for key: {}", record.client_key);
+        self.cache.remove_environment(&keys.client_key).await;
+        info!("Environment evicted for key: {}", keys.client_key);
     }
 
-    fn resolve_key(&self, environment_key: &str) -> Result<Arc<EnvRecord>> {
+    fn resolve_key(&self, environment_key: &str) -> Result<Arc<EnvironmentKeys>> {
         self.environments
             .resolve(environment_key)
             .ok_or_else(|| EdgeProxyError::FlagsmithUnknownKey(environment_key.to_string()))
     }
 
-    async fn fetch_environment(&self, record: &EnvRecord) -> Result<serde_json::Value> {
-        let server_key = record.valid_server_key().ok_or_else(|| {
+    async fn fetch_environment(&self, keys: &EnvironmentKeys) -> Result<serde_json::Value> {
+        let server_key = keys.valid_server_key().ok_or_else(|| {
             EdgeProxyError::ServiceUnavailable(format!(
                 "no active server-side key for environment {}",
-                record.client_key
+                keys.client_key
             ))
         })?;
 
         let if_modified_since = self
             .cache
-            .get_environment(&record.client_key)
+            .get_environment(&keys.client_key)
             .await
             .as_deref()
             .and_then(compute_if_modified_since);
@@ -120,7 +117,7 @@ impl EnvironmentService {
             // 304: upstream confirmed the cached copy is current.
             None => self
                 .cache
-                .get_environment(&record.client_key)
+                .get_environment(&keys.client_key)
                 .await
                 .map(|arc| (*arc).clone())
                 .ok_or_else(|| {
@@ -201,11 +198,11 @@ impl EnvironmentService {
     }
 
     pub async fn get_environment(&self, environment_key: &str) -> Result<Arc<serde_json::Value>> {
-        let record = self.resolve_key(environment_key)?;
+        let keys = self.resolve_key(environment_key)?;
 
         // Documents are cached under the client key, whichever key was presented
         self.cache
-            .get_environment(&record.client_key)
+            .get_environment(&keys.client_key)
             .await
             .ok_or_else(|| EdgeProxyError::ServiceUnavailable("Environment not loaded".to_string()))
     }
