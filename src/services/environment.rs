@@ -80,12 +80,12 @@ impl EnvironmentService {
 
     /// Forget an environment at runtime, so requests presenting any of its
     /// keys are rejected and nothing stale is served from a cache.
-    pub async fn evict_environment(&self, environment_key: &str) {
+    pub async fn remove_environment(&self, environment_key: &str) {
         let Some(keys) = self.environments.remove(environment_key) else {
             return;
         };
         self.cache.remove_environment(&keys.client_key).await;
-        info!("Environment evicted for key: {}", keys.client_key);
+        info!("Environment removed for key: {}", keys.client_key);
     }
 
     fn resolve_key(&self, environment_key: &str) -> Result<Arc<EnvironmentKeys>> {

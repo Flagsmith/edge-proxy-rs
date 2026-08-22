@@ -49,14 +49,14 @@ async fn create_loaded_service() -> (Arc<EnvironmentService>, String) {
 }
 
 #[tokio::test]
-async fn test_evicted_environment_rejects_client_and_server_keys() {
+async fn test_removed_environment_rejects_client_and_server_keys() {
     // Given
     let (service, client_key) = create_loaded_service().await;
     assert!(service.get_environment(&client_key).await.is_ok());
     assert!(service.get_environment(TEST_SERVER_KEY).await.is_ok());
 
     // When
-    service.evict_environment(&client_key).await;
+    service.remove_environment(&client_key).await;
 
     // Then
     assert!(matches!(
@@ -70,12 +70,12 @@ async fn test_evicted_environment_rejects_client_and_server_keys() {
 }
 
 #[tokio::test]
-async fn test_eviction_by_server_key_removes_the_whole_environment() {
+async fn test_remove_by_server_key_removes_the_whole_environment() {
     // Given
     let (service, client_key) = create_loaded_service().await;
 
     // When
-    service.evict_environment(TEST_SERVER_KEY).await;
+    service.remove_environment(TEST_SERVER_KEY).await;
 
     // Then
     assert!(matches!(
@@ -84,10 +84,10 @@ async fn test_eviction_by_server_key_removes_the_whole_environment() {
     ));
 }
 
-// The flags endpoint cache is consulted before the key gate, so eviction
-// must actively clear it or an evicted key keeps being served from cache.
+// The flags endpoint cache is consulted before the key gate, so removal
+// must actively clear it or a removed key keeps being served from cache.
 #[tokio::test]
-async fn test_eviction_clears_primed_flags_endpoint_cache() {
+async fn test_removal_clears_primed_flags_endpoint_cache() {
     // Given a primed flags endpoint cache
     let (service, client_key) = create_loaded_service().await;
     assert!(
@@ -98,7 +98,7 @@ async fn test_eviction_clears_primed_flags_endpoint_cache() {
     );
 
     // When
-    service.evict_environment(&client_key).await;
+    service.remove_environment(&client_key).await;
 
     // Then
     assert!(matches!(
@@ -108,7 +108,7 @@ async fn test_eviction_clears_primed_flags_endpoint_cache() {
 }
 
 #[tokio::test]
-async fn test_eviction_clears_primed_identities_endpoint_cache() {
+async fn test_removal_clears_primed_identities_endpoint_cache() {
     // Given a primed identities endpoint cache
     let (service, client_key) = create_loaded_service().await;
     let identity = IdentityWithTraits::new("some-user".to_string());
@@ -120,7 +120,7 @@ async fn test_eviction_clears_primed_identities_endpoint_cache() {
     );
 
     // When
-    service.evict_environment(&client_key).await;
+    service.remove_environment(&client_key).await;
 
     // Then
     assert!(matches!(
@@ -132,14 +132,14 @@ async fn test_eviction_clears_primed_identities_endpoint_cache() {
 }
 
 #[tokio::test]
-async fn test_eviction_clears_primed_environment_document_cache() {
+async fn test_removal_clears_primed_environment_document_cache() {
     // Given a primed environment-document endpoint cache
     let (service, client_key) = create_loaded_service().await;
     assert!(service.get_environment_bytes(&client_key).await.is_ok());
     assert!(service.get_environment_bytes(TEST_SERVER_KEY).await.is_ok());
 
     // When
-    service.evict_environment(&client_key).await;
+    service.remove_environment(&client_key).await;
 
     // Then
     assert!(matches!(
@@ -153,12 +153,12 @@ async fn test_eviction_clears_primed_environment_document_cache() {
 }
 
 #[tokio::test]
-async fn test_evicting_an_unknown_key_is_a_noop() {
+async fn test_removing_an_unknown_key_is_a_noop() {
     // Given
     let (service, client_key) = create_loaded_service().await;
 
     // When
-    service.evict_environment("not-a-configured-key").await;
+    service.remove_environment("not-a-configured-key").await;
 
     // Then
     assert!(service.get_environment(&client_key).await.is_ok());
