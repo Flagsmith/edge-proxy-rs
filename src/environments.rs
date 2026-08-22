@@ -5,21 +5,6 @@ use chrono::{DateTime, Utc};
 
 use crate::config::settings::EnvironmentKeyPair;
 
-/// Where the index learned about an environment.
-///
-/// Reconciliation against a remote source must never evict `Static`
-/// entries: they come from the local config file, and only a config
-/// change removes them.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EnvironmentSource {
-    /// Configured in `environment_key_pairs`.
-    Static,
-    /// Learned lazily by serving a previously unknown server-side key.
-    Discovered,
-    /// Returned by the core environment-inventory endpoint.
-    Inventory,
-}
-
 /// A server-side (`ser.`) key together with the validity metadata the
 /// inventory endpoint reports. Statically configured keys carry no
 /// metadata and are always valid.
@@ -38,12 +23,11 @@ impl ServerKey {
 
 /// The key set of one environment the proxy serves: its client-side key
 /// and every server-side key that can authenticate for it upstream
-/// (multiple during rotation), plus where the proxy learned about it.
+/// (multiple during rotation).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EnvironmentKeys {
     pub client_key: String,
     pub server_keys: Vec<ServerKey>,
-    pub source: EnvironmentSource,
 }
 
 impl EnvironmentKeys {
@@ -78,7 +62,6 @@ impl EnvironmentIndex {
                     active: true,
                     expires_at: None,
                 }],
-                source: EnvironmentSource::Static,
             });
         }
         index
@@ -183,7 +166,7 @@ mod tests {
     }
 
     #[test]
-    fn from_settings_resolves_both_keys_to_the_same_static_environment() {
+    fn from_settings_resolves_both_keys_to_the_same_environment() {
         // Given
         let index = EnvironmentIndex::from_settings(&[pair("client_a", "ser.a")]);
 
@@ -194,7 +177,6 @@ mod tests {
         // Then
         assert!(Arc::ptr_eq(&by_client, &by_server));
         assert_eq!(by_client.client_key, "client_a");
-        assert_eq!(by_client.source, EnvironmentSource::Static);
         assert!(by_client.valid_server_key().is_some());
     }
 
@@ -213,7 +195,6 @@ mod tests {
         index.insert(EnvironmentKeys {
             client_key: "client_a".to_string(),
             server_keys: vec![server_key("ser.new")],
-            source: EnvironmentSource::Inventory,
         });
 
         // Then
@@ -229,7 +210,6 @@ mod tests {
         index.insert(EnvironmentKeys {
             client_key: "client_a".to_string(),
             server_keys: vec![server_key("ser.one"), server_key("ser.two")],
-            source: EnvironmentSource::Inventory,
         });
 
         // When removed via one of its server keys
@@ -281,7 +261,6 @@ mod tests {
                     expires_at: Some(Utc::now() + TimeDelta::days(1)),
                 },
             ],
-            source: EnvironmentSource::Inventory,
         };
 
         // When / Then
@@ -297,7 +276,6 @@ mod tests {
                 active: false,
                 expires_at: None,
             }],
-            source: EnvironmentSource::Inventory,
         };
         assert!(keys.valid_server_key().is_none());
     }
