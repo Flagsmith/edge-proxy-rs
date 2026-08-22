@@ -88,7 +88,7 @@ impl EnvironmentIndex {
 
         if let Some(previous) = by_key.get(&keys.client_key).cloned() {
             for server_key in &previous.server_keys {
-                remove_index_entry(&mut by_key, &server_key.key, &previous);
+                by_key.remove(&server_key.key);
             }
         }
 
@@ -109,7 +109,7 @@ impl EnvironmentIndex {
 
         by_key.remove(&keys.client_key);
         for server_key in &keys.server_keys {
-            remove_index_entry(&mut by_key, &server_key.key, &keys);
+            by_key.remove(&server_key.key);
         }
 
         Some(keys)
@@ -126,22 +126,6 @@ impl EnvironmentIndex {
             .collect();
         snapshot.sort_by(|a, b| a.client_key.cmp(&b.client_key));
         snapshot
-    }
-}
-
-/// Remove `key` only if it still points at `keys`, so an environment
-/// that (mis)shares a server key with another never drops the other's
-/// entry.
-fn remove_index_entry(
-    by_key: &mut HashMap<String, Arc<EnvironmentKeys>>,
-    key: &str,
-    keys: &Arc<EnvironmentKeys>,
-) {
-    if by_key
-        .get(key)
-        .is_some_and(|indexed| Arc::ptr_eq(indexed, keys))
-    {
-        by_key.remove(key);
     }
 }
 
