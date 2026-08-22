@@ -80,8 +80,8 @@ impl EnvironmentService {
         all_success
     }
 
-    /// Forget an environment at runtime, so requests presenting any of its
-    /// keys are rejected and nothing stale is served from a cache.
+    /// Stop serving an environment: requests presenting any of its keys
+    /// are rejected, and everything cached for it is cleared.
     pub async fn remove_environment(&self, environment_key: &str) {
         let Some(keys) = self.environments.remove(environment_key) else {
             // Unknown key: clear the cache under it anyway, so a repeated
