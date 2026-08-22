@@ -43,6 +43,10 @@ impl EnvironmentKeys {
 /// server keys, so a single lookup resolves whichever kind of key a request
 /// presents.
 ///
+/// Server keys are assumed unique across environments: a key duplicated in
+/// the config is last-one-wins on insert, and removing either environment
+/// un-indexes the shared key for both.
+///
 /// Uses `std::sync::RwLock`, not tokio's: guards are held only for a map
 /// operation, never across an await, and lookups stay callable from
 /// synchronous code.

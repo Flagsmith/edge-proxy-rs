@@ -19,7 +19,9 @@ const DEFAULT_HOST: IpAddr = IpAddr::V4(Ipv4Addr::UNSPECIFIED);
 /// Run the proxy to completion: start polling, load the initial
 /// environment data, and serve until the process is stopped.
 ///
-/// Lives in the library so an alternative binary can compose it.
+/// In the library rather than main.rs so a separately distributed binary
+/// could compose the proxy without forking main; nothing besides main.rs
+/// calls it today.
 pub async fn run(settings: AppSettings) -> anyhow::Result<()> {
     info!("Starting Edge Proxy server...");
     info!("API URL: {}", settings.api_url);
