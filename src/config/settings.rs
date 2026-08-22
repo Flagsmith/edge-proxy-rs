@@ -173,6 +173,16 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_config_without_environment_key_pairs_parses_to_empty_valid_set() {
+        // Given a config file omitting environment_key_pairs entirely
+        let settings: AppSettings = serde_json::from_str("{}").unwrap();
+
+        // Then it behaves like an explicitly empty list and validates
+        assert!(settings.environment_key_pairs.is_empty());
+        assert!(settings.validate().is_ok());
+    }
+
+    #[test]
     fn test_client_side_key_validation_valid() {
         // Given
         let pair = EnvironmentKeyPair {
