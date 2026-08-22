@@ -6,7 +6,7 @@ use chrono::{DateTime, Utc};
 use crate::config::settings::EnvironmentKeyPair;
 
 /// A server-side (`ser.`) key together with the validity metadata the
-/// inventory endpoint reports. Statically configured keys carry no
+/// proxy config endpoint reports. Statically configured keys carry no
 /// metadata and are always valid.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServerKey {
