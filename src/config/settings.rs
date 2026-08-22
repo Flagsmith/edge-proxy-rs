@@ -91,8 +91,7 @@ impl Default for HealthCheckSettings {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Validate)]
 pub struct AppSettings {
-    // Optional so the environment set can also come from runtime discovery;
-    // omitting the field behaves like an explicitly empty list
+    // Optional so the environment set can also come from runtime discovery
     #[serde(default)]
     #[validate(nested)]
     pub environment_key_pairs: Vec<EnvironmentKeyPair>,
