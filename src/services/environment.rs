@@ -447,7 +447,8 @@ mod tests {
 
     #[tokio::test]
     async fn discard_environment_if_removed_clears_a_poll_reinsertion() {
-        // Given a document a racing poll re-inserted after removal
+        // Given a document left in the main cache by a poll that raced
+        // a removal
         let service = service(vec![]);
         let keys = EnvironmentKeys {
             client_key: "client".to_string(),
