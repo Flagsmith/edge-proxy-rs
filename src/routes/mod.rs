@@ -12,14 +12,14 @@ use axum::{
 };
 use std::sync::Arc;
 use tower_http::{
-    compression::CompressionLayer, cors::CorsLayer, normalize_path::NormalizePathLayer,
+    compression::CompressionLayer, cors::CorsLayer, normalize_path::NormalizePath,
     trace::TraceLayer,
 };
 
 pub fn create_router(settings: AppSettings) -> (Router, Arc<EnvironmentService>) {
     let environment_service = Arc::new(EnvironmentService::new(settings));
 
-    let app = Router::new()
+    let router = Router::new()
         // Health check routes
         .route("/health", get(health::health_check))
         .route("/proxy/health", get(health::health_check))
@@ -36,11 +36,14 @@ pub fn create_router(settings: AppSettings) -> (Router, Arc<EnvironmentService>)
             get(environment_document::get_environment_document),
         )
         // Middleware layers
-        .layer(NormalizePathLayer::trim_trailing_slash())
         .layer(CompressionLayer::new())
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
         .with_state(environment_service.clone());
+
+    // Trailing-slash normalization must wrap the router itself: axum matches
+    // routes before `Router::layer` middleware runs
+    let app = Router::new().fallback_service(NormalizePath::trim_trailing_slash(router));
 
     (app, environment_service)
 }
