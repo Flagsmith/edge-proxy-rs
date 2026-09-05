@@ -6,10 +6,12 @@ use crate::models::{
     APIFeatureState, IdentityResponse, IdentityWithTraits, ProxyConfigEnvironment,
 };
 use crate::services::feature_utils::filter_out_server_key_only_flag_results;
+use crate::usage::{Resource, UsageBatch, UsageCounts};
 use chrono::{DateTime, Utc};
 use flagsmith_flag_engine::engine::get_evaluation_result;
 use flagsmith_flag_engine::engine_eval::{FlagResult, add_identity_to_context};
 use flagsmith_flag_engine::identities::Trait as FlagsmithTrait;
+use parking_lot::Mutex;
 use reqwest::header::HeaderMap;
 use reqwest::{Client, Url};
 use std::sync::Arc;
@@ -23,6 +25,14 @@ pub struct EnvironmentService {
     pub settings: AppSettings,
     pub last_updated_at: Arc<RwLock<Option<DateTime<Utc>>>>,
     environments: EnvironmentIndex,
+    usage: UsageCounts,
+    pending_usage: Mutex<Vec<UsageBatch>>,
+}
+
+enum UsageOutcome {
+    Accepted,
+    Rejected,
+    Failed,
 }
 
 impl EnvironmentService {
@@ -41,6 +51,8 @@ impl EnvironmentService {
             settings,
             last_updated_at: Arc::new(RwLock::new(None)),
             environments,
+            usage: UsageCounts::default(),
+            pending_usage: Mutex::default(),
         }
     }
 
@@ -159,6 +171,20 @@ impl EnvironmentService {
             .ok_or_else(|| EdgeProxyError::FlagsmithUnknownKey(environment_key.to_string()))
     }
 
+    /// Count a served request against its environment. Static environments
+    /// stay on core's own billing, so they are not reported.
+    pub fn track_usage(&self, environment_key: &str, resource: Resource) {
+        if self.settings.proxy_key.is_none() {
+            return;
+        }
+        let Some(keys) = self.environments.resolve(environment_key) else {
+            return;
+        };
+        if !self.environments.is_static(&keys.client_key) {
+            self.usage.increment(&keys.client_key, resource);
+        }
+    }
+
     async fn fetch_environment(&self, keys: &EnvironmentKeys) -> Result<serde_json::Value> {
         let server_key = keys.valid_server_key().ok_or_else(|| {
             EdgeProxyError::ServiceUnavailable(format!(
@@ -210,6 +236,14 @@ impl EnvironmentService {
                 .client
                 .get(&next_url)
                 .header("X-Environment-Key", server_side_key);
+            // Core excludes marked fetches from API usage — the proxy
+            // reports served requests instead. Static environments stay
+            // unmarked and keep their old billing.
+            if !self.environments.is_static(server_side_key) {
+                if let Some(proxy_key) = &self.settings.proxy_key {
+                    request = request.header("X-Proxy-Key", proxy_key);
+                }
+            }
             // If-Modified-Since is meaningful only on the first request; the
             // upstream pagination cursor (page_id) drives subsequent fetches.
             if document.is_none() {
@@ -226,7 +260,7 @@ impl EnvironmentService {
 
             response.error_for_status_ref()?;
 
-            let next_link = parse_next_link(response.headers(), &self.settings.api_url);
+            let next_link = parse_next_link(response.headers(), &self.settings.api_url)?;
             let body: serde_json::Value = response.json().await?;
 
             match document.as_mut() {
@@ -397,6 +431,93 @@ impl EnvironmentService {
             self.refresh_environment_caches().await;
         }
     }
+
+    /// The usage endpoint's batch cap — MAX_USAGE_ROWS in the
+    /// edge_control_plane app. Flushes are chunked to it so a large
+    /// environment set can never be rejected outright.
+    const MAX_ROWS_PER_FLUSH: usize = 1000;
+
+    /// Returns false when any batch was not accepted.
+    pub async fn flush_usage(&self) -> bool {
+        let Some(proxy_key) = &self.settings.proxy_key else {
+            return true;
+        };
+
+        // A batch that failed may still have been processed, so it is
+        // resent unchanged under the same key and nothing new is drained
+        // until it is through. Meanwhile counts keep aggregating in the
+        // map, which is bounded by the served environment set.
+        let mut batches = std::mem::take(&mut *self.pending_usage.lock());
+        if batches.is_empty() {
+            let mut rows = self.usage.drain();
+            while !rows.is_empty() {
+                let chunk = rows.drain(..rows.len().min(Self::MAX_ROWS_PER_FLUSH));
+                batches.push(UsageBatch::new(chunk.collect()));
+            }
+        }
+
+        let mut all_success = true;
+        for batch in batches {
+            match self.post_usage(proxy_key, &batch).await {
+                UsageOutcome::Accepted => {}
+                UsageOutcome::Rejected => all_success = false,
+                UsageOutcome::Failed => {
+                    self.pending_usage.lock().push(batch);
+                    all_success = false;
+                }
+            }
+        }
+        all_success
+    }
+
+    async fn post_usage(&self, proxy_key: &str, batch: &UsageBatch) -> UsageOutcome {
+        let url = format!("{}/proxy/usage/", self.settings.api_url);
+        let result = self
+            .client
+            .post(&url)
+            .header("X-Proxy-Key", proxy_key)
+            .header("Idempotency-Key", &batch.id)
+            .json(&batch.rows)
+            .send()
+            .await;
+        match result {
+            Ok(response) if response.status().is_success() => UsageOutcome::Accepted,
+            // Retrying cannot heal a rejection: drop the batch rather than
+            // resend it forever.
+            Ok(response) if response.status().is_client_error() => {
+                error!(
+                    "Usage report rejected with {}: dropping {} rows",
+                    response.status(),
+                    batch.rows.len()
+                );
+                UsageOutcome::Rejected
+            }
+            Ok(response) => {
+                error!("Failed to report usage: {}", response.status());
+                UsageOutcome::Failed
+            }
+            Err(e) => {
+                error!("Failed to report usage: {}", e);
+                UsageOutcome::Failed
+            }
+        }
+    }
+
+    pub async fn flush_usage_periodically(self: Arc<Self>) {
+        if self.settings.proxy_key.is_none() {
+            return;
+        }
+        let mut interval = tokio::time::interval(Duration::from_secs(
+            self.settings.usage_flush_interval_seconds,
+        ));
+        // The first tick completes immediately, before anything is counted.
+        interval.tick().await;
+
+        loop {
+            interval.tick().await;
+            self.flush_usage().await;
+        }
+    }
 }
 
 /// Format the cached document's `updated_at` as an RFC 2822 `If-Modified-Since`
@@ -440,11 +561,18 @@ fn merge_paginated_overrides(base: &mut serde_json::Value, page: serde_json::Val
 /// Parse the `Link` response header for the next-page URL (RFC 5988).
 ///
 /// Returns an absolute URL, resolving relative targets against `api_url`.
-fn parse_next_link(headers: &HeaderMap, api_url: &str) -> Option<String> {
-    let base = Url::parse(api_url).ok()?;
+/// The `rel=next` pagination target, if any. A target off `api_url`'s
+/// origin is an error: the next request carries the environment and proxy
+/// keys, and a Link header must not be able to send them elsewhere.
+fn parse_next_link(headers: &HeaderMap, api_url: &str) -> Result<Option<String>> {
+    let Ok(base) = Url::parse(api_url) else {
+        return Ok(None);
+    };
 
     for header_value in headers.get_all(reqwest::header::LINK).iter() {
-        let raw = header_value.to_str().ok()?;
+        let Ok(raw) = header_value.to_str() else {
+            return Ok(None);
+        };
         for segment in raw.split(',') {
             let segment = segment.trim();
             let target = match (segment.find('<'), segment.find('>')) {
@@ -455,12 +583,18 @@ fn parse_next_link(headers: &HeaderMap, api_url: &str) -> Option<String> {
             if !is_next_rel(params) {
                 continue;
             }
-            if let Ok(absolute) = base.join(target) {
-                return Some(absolute.into());
+            let Ok(absolute) = base.join(target) else {
+                continue;
+            };
+            if absolute.origin() != base.origin() {
+                return Err(EdgeProxyError::ServiceUnavailable(format!(
+                    "refusing cross-origin pagination link {absolute}"
+                )));
             }
+            return Ok(Some(absolute.into()));
         }
     }
-    None
+    Ok(None)
 }
 
 fn is_next_rel(params: &str) -> bool {
@@ -498,40 +632,58 @@ mod tests {
         );
         let next = parse_next_link(&headers, "https://edge.api.flagsmith.com/api/v1").unwrap();
         assert_eq!(
-            next,
+            next.unwrap(),
             "https://edge.api.flagsmith.com/api/v1/environment-document/?page_id=identity_override%3A1%3Aabc"
         );
     }
 
     #[test]
-    fn parse_next_link_absolute() {
-        let headers =
-            link("<https://example.test/api/v1/environment-document/?page_id=x>; rel=\"next\"");
+    fn parse_next_link_absolute_same_origin() {
+        let headers = link(
+            "<https://edge.api.flagsmith.com/api/v1/environment-document/?page_id=x>; rel=\"next\"",
+        );
         let next = parse_next_link(&headers, "https://edge.api.flagsmith.com/api/v1").unwrap();
         assert_eq!(
-            next,
-            "https://example.test/api/v1/environment-document/?page_id=x"
+            next.unwrap(),
+            "https://edge.api.flagsmith.com/api/v1/environment-document/?page_id=x"
         );
+    }
+
+    #[test]
+    fn parse_next_link_rejects_cross_origin() {
+        let headers =
+            link("<https://example.test/api/v1/environment-document/?page_id=x>; rel=\"next\"");
+        assert!(parse_next_link(&headers, "https://edge.api.flagsmith.com/api/v1").is_err());
     }
 
     #[test]
     fn parse_next_link_picks_next_among_multiple_rels() {
         let headers = link("</api/v1/page/prev>; rel=\"prev\", </api/v1/page/next>; rel=\"next\"");
         let next = parse_next_link(&headers, "https://edge.api.flagsmith.com/api/v1").unwrap();
-        assert_eq!(next, "https://edge.api.flagsmith.com/api/v1/page/next");
+        assert_eq!(
+            next.unwrap(),
+            "https://edge.api.flagsmith.com/api/v1/page/next"
+        );
     }
 
     #[test]
     fn parse_next_link_returns_none_when_only_other_rels() {
         let headers = link("</prev>; rel=\"prev\", </self>; rel=\"self\"");
-        assert!(parse_next_link(&headers, "https://edge.api.flagsmith.com/api/v1").is_none());
+        assert!(
+            parse_next_link(&headers, "https://edge.api.flagsmith.com/api/v1")
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
     fn parse_next_link_handles_unquoted_rel() {
         let headers = link("</api/v1/page/next>; rel=next");
         let next = parse_next_link(&headers, "https://edge.api.flagsmith.com/api/v1").unwrap();
-        assert_eq!(next, "https://edge.api.flagsmith.com/api/v1/page/next");
+        assert_eq!(
+            next.unwrap(),
+            "https://edge.api.flagsmith.com/api/v1/page/next"
+        );
     }
 
     #[test]
