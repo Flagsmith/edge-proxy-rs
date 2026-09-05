@@ -78,17 +78,13 @@ impl EnvironmentIndex {
         self.by_key.read().get(key).cloned()
     }
 
-    /// Insert or replace an environment's keys, dropping index entries
-    /// for server keys the previous version no longer has. Returns the
-    /// replaced version, if any: request caches are keyed by presented
-    /// key and consulted before the key gate, so the caller owns
-    /// invalidating whatever is cached under keys that stopped resolving.
-    pub fn insert(&self, keys: EnvironmentKeys) -> Option<Arc<EnvironmentKeys>> {
+    /// Insert or replace an environment's keys. Server keys the
+    /// environment no longer has stop resolving.
+    pub fn insert(&self, keys: EnvironmentKeys) {
         let keys = Arc::new(keys);
         let mut by_key = self.by_key.write();
 
-        let previous = by_key.get(&keys.client_key).cloned();
-        if let Some(previous) = &previous {
+        if let Some(previous) = by_key.get(&keys.client_key).cloned() {
             for server_key in &previous.server_keys {
                 by_key.remove(&server_key.key);
             }
@@ -98,7 +94,6 @@ impl EnvironmentIndex {
             by_key.insert(server_key.key.clone(), Arc::clone(&keys));
         }
         by_key.insert(keys.client_key.clone(), keys);
-        previous
     }
 
     /// Remove the environment `key` resolves to (any of its keys works),
@@ -176,26 +171,15 @@ mod tests {
         let index = EnvironmentIndex::from_settings(&[pair("client_a", "ser.old")]);
 
         // When the environment's server key is rotated
-        let replaced = index.insert(EnvironmentKeys {
+        index.insert(EnvironmentKeys {
             client_key: "client_a".to_string(),
             server_keys: vec![server_key("ser.new")],
         });
 
-        // Then the caller learns which version (and keys) it replaced
-        assert_eq!(replaced.unwrap().server_keys[0].key, "ser.old");
+        // Then only the new server key resolves
         assert!(index.resolve("ser.old").is_none());
         assert_eq!(index.resolve("ser.new").unwrap().client_key, "client_a");
         assert_eq!(index.snapshot().len(), 1);
-    }
-
-    #[test]
-    fn insert_returns_none_for_a_new_environment() {
-        let index = EnvironmentIndex::default();
-        let replaced = index.insert(EnvironmentKeys {
-            client_key: "client_a".to_string(),
-            server_keys: vec![server_key("ser.a")],
-        });
-        assert!(replaced.is_none());
     }
 
     #[test]
