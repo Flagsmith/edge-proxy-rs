@@ -53,7 +53,7 @@ impl EnvironmentKeys {
 /// synchronous code.
 #[derive(Default)]
 pub struct EnvironmentIndex {
-    by_key: RwLock<HashMap<String, Arc<EnvironmentKeys>>>,
+    environment_keys_by_any_key: RwLock<HashMap<String, Arc<EnvironmentKeys>>>,
 }
 
 impl EnvironmentIndex {
@@ -75,36 +75,36 @@ impl EnvironmentIndex {
     /// Resolve a presented key — client- or server-side — to its
     /// environment's keys.
     pub fn resolve(&self, key: &str) -> Option<Arc<EnvironmentKeys>> {
-        self.by_key.read().get(key).cloned()
+        self.environment_keys_by_any_key.read().get(key).cloned()
     }
 
     /// Insert or replace an environment's keys. Server keys the
     /// environment no longer has stop resolving.
     pub fn insert(&self, keys: EnvironmentKeys) {
         let keys = Arc::new(keys);
-        let mut by_key = self.by_key.write();
+        let mut environment_keys_by_any_key = self.environment_keys_by_any_key.write();
 
-        if let Some(previous) = by_key.get(&keys.client_key).cloned() {
+        if let Some(previous) = environment_keys_by_any_key.get(&keys.client_key).cloned() {
             for server_key in &previous.server_keys {
-                by_key.remove(&server_key.key);
+                environment_keys_by_any_key.remove(&server_key.key);
             }
         }
 
         for server_key in &keys.server_keys {
-            by_key.insert(server_key.key.clone(), Arc::clone(&keys));
+            environment_keys_by_any_key.insert(server_key.key.clone(), Arc::clone(&keys));
         }
-        by_key.insert(keys.client_key.clone(), keys);
+        environment_keys_by_any_key.insert(keys.client_key.clone(), keys);
     }
 
     /// Remove the environment `key` resolves to (any of its keys works),
     /// returning its keys so the caller can clear per-key caches.
     pub fn remove(&self, key: &str) -> Option<Arc<EnvironmentKeys>> {
-        let mut by_key = self.by_key.write();
-        let keys = by_key.get(key).cloned()?;
+        let mut environment_keys_by_any_key = self.environment_keys_by_any_key.write();
+        let keys = environment_keys_by_any_key.get(key).cloned()?;
 
-        by_key.remove(&keys.client_key);
+        environment_keys_by_any_key.remove(&keys.client_key);
         for server_key in &keys.server_keys {
-            by_key.remove(&server_key.key);
+            environment_keys_by_any_key.remove(&server_key.key);
         }
 
         Some(keys)
@@ -113,8 +113,8 @@ impl EnvironmentIndex {
     /// Point-in-time snapshot of every environment's keys, ordered by
     /// client key so callers iterate deterministically.
     pub fn snapshot(&self) -> Vec<Arc<EnvironmentKeys>> {
-        let by_key = self.by_key.read();
-        let mut snapshot: Vec<Arc<EnvironmentKeys>> = by_key
+        let environment_keys_by_any_key = self.environment_keys_by_any_key.read();
+        let mut snapshot: Vec<Arc<EnvironmentKeys>> = environment_keys_by_any_key
             .iter()
             .filter(|(key, keys)| key.as_str() == keys.client_key)
             .map(|(_, keys)| Arc::clone(keys))
