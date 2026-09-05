@@ -1,4 +1,4 @@
-use crate::cache::{CacheKey, EndpointCache, EnvironmentsCache, LocalMemEnvironmentsCache};
+use crate::cache::{EnvironmentsCache, LocalMemEnvironmentsCache};
 use crate::config::settings::{AppSettings, EnvironmentKeyPair};
 use crate::error::{EdgeProxyError, Result};
 use crate::models::{APIFeatureState, IdentityResponse, IdentityWithTraits};
@@ -17,7 +17,6 @@ use tracing::{debug, error, info, warn};
 
 pub struct EnvironmentService {
     pub cache: Arc<dyn EnvironmentsCache>,
-    pub endpoint_cache: Arc<EndpointCache>,
     client: Client,
     pub settings: AppSettings,
     pub last_updated_at: Arc<RwLock<Option<DateTime<Utc>>>>,
@@ -43,18 +42,8 @@ impl EnvironmentService {
             server_to_client.insert(pair.server_side_key.clone(), pair.client_side_key.clone());
         }
 
-        let endpoint_cache = Arc::new(EndpointCache::new(
-            settings.endpoint_caches.flags.use_cache,
-            settings.endpoint_caches.flags.cache_max_size,
-            settings.endpoint_caches.identities.use_cache,
-            settings.endpoint_caches.identities.cache_max_size,
-            settings.endpoint_caches.environment_document.use_cache,
-            settings.endpoint_caches.environment_document.cache_max_size,
-        ));
-
         Self {
             cache: Arc::new(LocalMemEnvironmentsCache::new()),
-            endpoint_cache,
             client,
             settings,
             last_updated_at: Arc::new(RwLock::new(None)),
@@ -85,12 +74,6 @@ impl EnvironmentService {
                             "Environment cache updated for key: {}",
                             pair.client_side_key
                         );
-                        self.endpoint_cache
-                            .clear_environment(&pair.client_side_key)
-                            .await;
-                        self.endpoint_cache
-                            .clear_environment(&pair.server_side_key)
-                            .await;
                     }
                 }
                 Err(e) => {
@@ -211,40 +194,10 @@ impl EnvironmentService {
             .ok_or_else(|| EdgeProxyError::ServiceUnavailable("Environment not loaded".to_string()))
     }
 
-    /// Get pre-serialized environment document bytes with endpoint caching
+    /// Get pre-serialized environment document bytes
     pub async fn get_environment_bytes(&self, environment_key: &str) -> Result<Arc<[u8]>> {
-        if self.endpoint_cache.is_environment_document_cache_enabled() {
-            let cache_key = CacheKey::new(
-                environment_key.to_string(),
-                "environment_document".to_string(),
-                "".to_string(),
-            );
-
-            if let Some(cached_bytes) = self
-                .endpoint_cache
-                .get_environment_document(&cache_key)
-                .await
-            {
-                return Ok(cached_bytes);
-            }
-        }
-
         let document = self.get_environment(environment_key).await?;
-
-        let bytes: Arc<[u8]> = serde_json::to_vec(&*document)?.into();
-
-        if self.endpoint_cache.is_environment_document_cache_enabled() {
-            let cache_key = CacheKey::new(
-                environment_key.to_string(),
-                "environment_document".to_string(),
-                "".to_string(),
-            );
-            self.endpoint_cache
-                .put_environment_document(cache_key, bytes.clone())
-                .await;
-        }
-
-        Ok(bytes)
+        Ok(serde_json::to_vec(&*document)?.into())
     }
 
     fn extract_server_key_only_ids(document: &serde_json::Value) -> Vec<u32> {
@@ -265,20 +218,6 @@ impl EnvironmentService {
         environment_key: &str,
         feature_name: Option<&str>,
     ) -> Result<Vec<APIFeatureState>> {
-        if self.endpoint_cache.is_flags_cache_enabled() {
-            let cache_key = CacheKey::new(
-                environment_key.to_string(),
-                "flags".to_string(),
-                feature_name.unwrap_or("").to_string(),
-            );
-
-            if let Some(cached) = self.endpoint_cache.get_flags(&cache_key).await {
-                if let Ok(flags) = serde_json::from_value::<Vec<APIFeatureState>>(cached) {
-                    return Ok(flags);
-                }
-            }
-        }
-
         if !self.key_mapping.contains_key(environment_key) {
             return Err(EdgeProxyError::FlagsmithUnknownKey(
                 environment_key.to_string(),
@@ -319,22 +258,7 @@ impl EnvironmentService {
             }
         }
 
-        let result: Vec<APIFeatureState> = flag_results.iter().map(Into::into).collect();
-
-        // Cache the result if enabled
-        if self.endpoint_cache.is_flags_cache_enabled() {
-            let cache_key = CacheKey::new(
-                environment_key.to_string(),
-                "flags".to_string(),
-                feature_name.unwrap_or("").to_string(),
-            );
-
-            if let Ok(value) = serde_json::to_value(&result) {
-                self.endpoint_cache.put_flags(cache_key, value).await;
-            }
-        }
-
-        Ok(result)
+        Ok(flag_results.iter().map(Into::into).collect())
     }
 
     pub async fn get_identity_response_data(
@@ -342,23 +266,6 @@ impl EnvironmentService {
         identity: &IdentityWithTraits,
         environment_key: &str,
     ) -> Result<IdentityResponse> {
-        if self.endpoint_cache.is_identities_cache_enabled() {
-            // Create cache key from identity data
-            let cache_params =
-                serde_json::to_string(&identity).unwrap_or_else(|_| identity.identifier.clone());
-            let cache_key = CacheKey::new(
-                environment_key.to_string(),
-                "identities".to_string(),
-                cache_params.clone(),
-            );
-
-            if let Some(cached) = self.endpoint_cache.get_identity(&cache_key).await {
-                if let Ok(response) = serde_json::from_value::<IdentityResponse>(cached) {
-                    return Ok(response);
-                }
-            }
-        }
-
         // Verify the key is valid
         if !self.key_mapping.contains_key(environment_key) {
             return Err(EdgeProxyError::FlagsmithUnknownKey(
@@ -395,31 +302,14 @@ impl EnvironmentService {
             }
         }
 
-        let result = IdentityResponse {
+        Ok(IdentityResponse {
             flags: flag_results.iter().map(Into::into).collect(),
             traits: identity
                 .traits
                 .iter()
                 .map(|t| t.to_response_json())
                 .collect(),
-        };
-
-        // Cache the result if enabled
-        if self.endpoint_cache.is_identities_cache_enabled() {
-            let cache_params =
-                serde_json::to_string(&identity).unwrap_or_else(|_| identity.identifier.clone());
-            let cache_key = CacheKey::new(
-                environment_key.to_string(),
-                "identities".to_string(),
-                cache_params,
-            );
-
-            if let Ok(value) = serde_json::to_value(&result) {
-                self.endpoint_cache.put_identity(cache_key, value).await;
-            }
-        }
-
-        Ok(result)
+        })
     }
 
     pub async fn poll_environments(self: Arc<Self>) {

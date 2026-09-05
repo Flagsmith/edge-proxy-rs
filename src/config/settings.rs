@@ -77,37 +77,6 @@ impl Default for LoggingSettings {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EndpointCacheSettings {
-    #[serde(default)]
-    pub use_cache: bool,
-    #[serde(default = "default_cache_size")]
-    pub cache_max_size: usize,
-}
-
-fn default_cache_size() -> usize {
-    128
-}
-
-impl Default for EndpointCacheSettings {
-    fn default() -> Self {
-        Self {
-            use_cache: false,
-            cache_max_size: default_cache_size(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct EndpointCachesSettings {
-    #[serde(default)]
-    pub flags: EndpointCacheSettings,
-    #[serde(default)]
-    pub identities: EndpointCacheSettings,
-    #[serde(default)]
-    pub environment_document: EndpointCacheSettings,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HealthCheckSettings {
     pub environment_update_grace_period_seconds: Option<u64>,
 }
@@ -135,8 +104,6 @@ pub struct AppSettings {
     #[serde(default)]
     pub logging: LoggingSettings,
     #[serde(default)]
-    pub endpoint_caches: EndpointCachesSettings,
-    #[serde(default)]
     pub health_check: HealthCheckSettings,
 }
 
@@ -161,7 +128,6 @@ impl Default for AppSettings {
             api_poll_timeout_seconds: default_api_poll_timeout(),
             server: ServerSettings::default(),
             logging: LoggingSettings::default(),
-            endpoint_caches: EndpointCachesSettings::default(),
             health_check: HealthCheckSettings::default(),
         }
     }
