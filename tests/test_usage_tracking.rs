@@ -1,7 +1,9 @@
+use axum::http::StatusCode;
 use axum_test::TestServer;
 use edge_proxy::config::settings::{AppSettings, EnvironmentKeyPair};
 use edge_proxy::routes::create_router;
 use edge_proxy::services::EnvironmentService;
+use edge_proxy::usage::Resource;
 use serde_json::{Value, json};
 use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, Request, ResponseTemplate};
@@ -200,6 +202,56 @@ async fn test_unresolved_keys_are_never_counted() {
 }
 
 #[tokio::test]
+async fn test_failed_requests_are_not_counted() {
+    // Given one environment that serves and one whose document never loaded
+    let mock_server = MockServer::start().await;
+    let mut environments = config_body();
+    environments.as_array_mut().unwrap().push(json!({
+        "id": 31,
+        "name": "Broken Environment",
+        "client_side_key": "broken_client",
+        "server_side_keys": [
+            {"key": "ser.broken_key", "active": true, "expires_at": null}
+        ],
+        "updated_at": "2026-08-15T08:57:43.311081Z",
+        "project_id": 35,
+        "organisation_id": 82,
+    }));
+    Mock::given(method("GET"))
+        .and(path("/proxy/config/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(environments))
+        .mount(&mock_server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/environment-document/"))
+        .and(header("X-Environment-Key", "ser.broken_key"))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(&mock_server)
+        .await;
+    mount_document(&mock_server).await;
+    let (app, service) = create_router(settings(&mock_server.uri(), Some(PROXY_KEY), vec![]));
+    service.refresh_environment_caches().await;
+    let server = TestServer::new(app).unwrap();
+
+    // When requests fail after their key resolved
+    server
+        .get("/api/v1/flags")
+        .add_query_param("feature", "missing")
+        .add_header("X-Environment-Key", CLIENT_KEY)
+        .await
+        .assert_status(StatusCode::NOT_FOUND);
+    server
+        .get("/api/v1/flags")
+        .add_header("X-Environment-Key", "broken_client")
+        .await
+        .assert_status(StatusCode::SERVICE_UNAVAILABLE);
+
+    // Then nothing is reported
+    assert!(service.flush_usage().await);
+    assert!(requests_to(&mock_server, "/proxy/usage/").await.is_empty());
+}
+
+#[tokio::test]
 async fn test_failed_flush_merges_counts_into_the_next() {
     // Given a served request and a usage endpoint that fails once
     let mock_server = MockServer::start().await;
@@ -209,17 +261,11 @@ async fn test_failed_flush_merges_counts_into_the_next() {
     mount_usage(&mock_server, 204, None).await;
     let service = EnvironmentService::new(settings(&mock_server.uri(), Some(PROXY_KEY), vec![]));
     service.refresh_environment_caches().await;
-    service
-        .get_flags_response_data(CLIENT_KEY, None)
-        .await
-        .unwrap();
+    service.track_usage(CLIENT_KEY, Resource::Flags);
 
     // When the first flush fails and another request is served
     assert!(!service.flush_usage().await);
-    service
-        .get_flags_response_data(CLIENT_KEY, None)
-        .await
-        .unwrap();
+    service.track_usage(CLIENT_KEY, Resource::Flags);
 
     // Then the next flush carries both counts — nothing lost, nothing
     // double-counted
@@ -246,10 +292,7 @@ async fn test_flush_without_proxy_key_is_inert() {
         }],
     ));
     service.refresh_environment_caches().await;
-    service
-        .get_flags_response_data(CLIENT_KEY, None)
-        .await
-        .unwrap();
+    service.track_usage(CLIENT_KEY, Resource::Flags);
 
     // When / Then: flushing succeeds without reporting anything
     assert!(service.flush_usage().await);
@@ -265,10 +308,7 @@ async fn test_rejected_flush_drops_the_batch_instead_of_retrying_it() {
     mount_usage(&mock_server, 400, None).await;
     let service = EnvironmentService::new(settings(&mock_server.uri(), Some(PROXY_KEY), vec![]));
     service.refresh_environment_caches().await;
-    service
-        .get_flags_response_data(CLIENT_KEY, None)
-        .await
-        .unwrap();
+    service.track_usage(CLIENT_KEY, Resource::Flags);
 
     // When the flush is rejected
     assert!(!service.flush_usage().await);
@@ -308,10 +348,7 @@ async fn test_flush_chunks_batches_to_the_server_cap() {
     let service = EnvironmentService::new(settings(&mock_server.uri(), Some(PROXY_KEY), vec![]));
     service.refresh_environment_caches().await;
     for n in 0..1001 {
-        service
-            .get_flags_response_data(&format!("client_{n}"), None)
-            .await
-            .unwrap();
+        service.track_usage(&format!("client_{n}"), Resource::Flags);
     }
 
     // When
@@ -341,14 +378,8 @@ async fn test_static_environment_usage_is_neither_counted_nor_marked() {
     service.refresh_environment_caches().await;
 
     // When both environments serve a request, and usage is flushed
-    service
-        .get_flags_response_data("static_client", None)
-        .await
-        .unwrap();
-    service
-        .get_flags_response_data(CLIENT_KEY, None)
-        .await
-        .unwrap();
+    service.track_usage("static_client", Resource::Flags);
+    service.track_usage(CLIENT_KEY, Resource::Flags);
     assert!(service.flush_usage().await);
 
     // Then the static environment keeps its old billing: its document
