@@ -40,19 +40,14 @@ impl EnvironmentKeys {
 
 /// The runtime-mutable set of environments the proxy serves.
 ///
-/// Every environment is indexed under its client key *and* each of its
-/// server keys, so a single lookup resolves whichever kind of key a request
-/// presents.
-///
-/// Server keys are assumed unique across environments: a key duplicated in
-/// the config is last-one-wins on insert, and removing either environment
-/// un-indexes the shared key for both.
-///
 /// Uses `parking_lot::RwLock`, not tokio's: guards are held only for a map
 /// operation, never across an await, and lookups stay callable from
 /// synchronous code.
 #[derive(Default)]
 pub struct EnvironmentIndex {
+    /// One entry per key an environment owns, client and server alike, all
+    /// pointing at the same record, so a lookup takes whichever key a
+    /// request presents.
     environment_keys_by_any_key: RwLock<HashMap<String, Arc<EnvironmentKeys>>>,
 }
 
