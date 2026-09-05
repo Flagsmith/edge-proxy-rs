@@ -161,10 +161,11 @@ async fn test_served_requests_flush_aggregated_usage() {
     let flushed = service.flush_usage().await;
 
     // Then one POST reports everything, keyed by the client key even for
-    // requests that presented the server key
+    // requests that presented the server key, under an idempotency key
     assert!(flushed);
     let posts = requests_to(&mock_server, "/proxy/usage/").await;
     assert_eq!(posts.len(), 1);
+    assert!(!posts[0].headers["Idempotency-Key"].is_empty());
     assert_eq!(
         usage_rows(&posts[0]),
         vec![
@@ -252,7 +253,7 @@ async fn test_failed_requests_are_not_counted() {
 }
 
 #[tokio::test]
-async fn test_failed_flush_merges_counts_into_the_next() {
+async fn test_failed_flush_retries_the_same_batch_before_new_counts() {
     // Given a served request and a usage endpoint that fails once
     let mock_server = MockServer::start().await;
     mount_config(&mock_server).await;
@@ -263,19 +264,26 @@ async fn test_failed_flush_merges_counts_into_the_next() {
     service.refresh_environment_caches().await;
     service.track_usage(CLIENT_KEY, Resource::Flags);
 
-    // When the first flush fails and another request is served
+    // When the first flush fails, another request is served, and two
+    // more flushes run
     assert!(!service.flush_usage().await);
     service.track_usage(CLIENT_KEY, Resource::Flags);
-
-    // Then the next flush carries both counts — nothing lost, nothing
-    // double-counted
     assert!(service.flush_usage().await);
+    assert!(service.flush_usage().await);
+
+    // Then the failed batch is resent unchanged under its original key,
+    // and the count served meanwhile follows as its own batch
     let posts = requests_to(&mock_server, "/proxy/usage/").await;
-    assert_eq!(posts.len(), 2);
-    assert_eq!(
-        usage_rows(&posts[1]),
-        vec![json!({"client_side_key": CLIENT_KEY, "resource": "flags", "count": 2})]
-    );
+    assert_eq!(posts.len(), 3);
+    let keys: Vec<&str> = posts
+        .iter()
+        .map(|post| post.headers["Idempotency-Key"].to_str().unwrap())
+        .collect();
+    assert_eq!(keys[0], keys[1]);
+    assert_ne!(keys[1], keys[2]);
+    let one_flag = vec![json!({"client_side_key": CLIENT_KEY, "resource": "flags", "count": 1})];
+    assert_eq!(usage_rows(&posts[1]), one_flag);
+    assert_eq!(usage_rows(&posts[2]), one_flag);
 }
 
 #[tokio::test]
@@ -354,10 +362,15 @@ async fn test_flush_chunks_batches_to_the_server_cap() {
     // When
     assert!(service.flush_usage().await);
 
-    // Then the rows arrive split across two accepted requests
+    // Then the rows arrive split across two accepted requests, each its
+    // own batch
     let posts = requests_to(&mock_server, "/proxy/usage/").await;
     let row_counts: Vec<usize> = posts.iter().map(|post| usage_rows(post).len()).collect();
     assert_eq!(row_counts, vec![1000, 1]);
+    assert_ne!(
+        posts[0].headers["Idempotency-Key"],
+        posts[1].headers["Idempotency-Key"]
+    );
 }
 
 #[tokio::test]

@@ -52,16 +52,20 @@ impl UsageCounts {
             })
             .collect()
     }
+}
 
-    /// Add drained counts back, on top of anything counted since — for
-    /// when a flush fails and the rows must survive until the next one.
-    pub fn merge(&self, counts: Vec<UsageRow>) {
-        let mut count_by_environment_and_resource = self.count_by_environment_and_resource.lock();
-        for row in counts {
-            let entry = count_by_environment_and_resource
-                .entry((row.client_side_key, row.resource))
-                .or_default();
-            *entry = entry.saturating_add(row.count);
+/// One `POST /proxy/usage/` body with the idempotency key it is sent
+/// under, so a retry after a lost response is recognised, not recounted.
+pub struct UsageBatch {
+    pub id: String,
+    pub rows: Vec<UsageRow>,
+}
+
+impl UsageBatch {
+    pub fn new(rows: Vec<UsageRow>) -> Self {
+        Self {
+            id: uuid::Uuid::new_v4().to_string(),
+            rows,
         }
     }
 }
@@ -111,23 +115,6 @@ mod tests {
 
         // Then
         assert!(counts.drain().is_empty());
-    }
-
-    #[test]
-    fn merge_adds_drained_counts_back() {
-        // Given a drained batch and a request counted since
-        let counts = UsageCounts::default();
-        counts.increment("client", Resource::Flags);
-        let drained = counts.drain();
-        counts.increment("client", Resource::Flags);
-
-        // When
-        counts.merge(drained);
-
-        // Then
-        let rows = counts.drain();
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].count, 2);
     }
 
     #[test]
