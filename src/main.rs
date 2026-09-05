@@ -44,6 +44,11 @@ async fn main() -> anyhow::Result<()> {
         polling_service.poll_environments().await;
     });
 
+    let usage_service = environment_service.clone();
+    tokio::spawn(async move {
+        usage_service.flush_usage_periodically().await;
+    });
+
     let addr = SocketAddr::from((
         settings
             .server

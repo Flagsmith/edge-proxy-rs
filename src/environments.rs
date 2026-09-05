@@ -84,6 +84,11 @@ impl EnvironmentIndex {
         index
     }
 
+    /// Whether the key belongs to a statically configured environment.
+    pub fn is_static(&self, key: &str) -> bool {
+        self.protected.contains(key)
+    }
+
     /// Resolve a presented key — client- or server-side — to its
     /// environment's keys. A server-side key resolves only while it is
     /// valid, so a deactivation delivered by the proxy config and an

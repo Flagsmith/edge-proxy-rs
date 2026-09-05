@@ -6,6 +6,7 @@ use crate::models::{
     APIFeatureState, IdentityResponse, IdentityWithTraits, ProxyConfigEnvironment,
 };
 use crate::services::feature_utils::filter_out_server_key_only_flag_results;
+use crate::usage::{Resource, UsageCounts, UsageRow};
 use chrono::{DateTime, Utc};
 use flagsmith_flag_engine::engine::get_evaluation_result;
 use flagsmith_flag_engine::engine_eval::{FlagResult, add_identity_to_context};
@@ -23,6 +24,7 @@ pub struct EnvironmentService {
     pub settings: AppSettings,
     pub last_updated_at: Arc<RwLock<Option<DateTime<Utc>>>>,
     environments: EnvironmentIndex,
+    usage: UsageCounts,
 }
 
 impl EnvironmentService {
@@ -41,6 +43,7 @@ impl EnvironmentService {
             settings,
             last_updated_at: Arc::new(RwLock::new(None)),
             environments,
+            usage: UsageCounts::default(),
         }
     }
 
@@ -153,10 +156,26 @@ impl EnvironmentService {
         Ok(response.json().await?)
     }
 
-    fn resolve_key(&self, environment_key: &str) -> Result<Arc<EnvironmentKeys>> {
-        self.environments
+    /// Resolve a presented key, counting the request for usage reporting.
+    /// Every SDK entry point resolves through here, so a served request
+    /// cannot be missed.
+    fn resolve_key(
+        &self,
+        environment_key: &str,
+        resource: Resource,
+    ) -> Result<Arc<EnvironmentKeys>> {
+        let keys = self
+            .environments
             .resolve(environment_key)
-            .ok_or_else(|| EdgeProxyError::FlagsmithUnknownKey(environment_key.to_string()))
+            .ok_or_else(|| EdgeProxyError::FlagsmithUnknownKey(environment_key.to_string()))?;
+        self.track_usage(&keys.client_key, resource);
+        Ok(keys)
+    }
+
+    fn track_usage(&self, client_key: &str, resource: Resource) {
+        if self.settings.proxy_key.is_some() && !self.environments.is_static(client_key) {
+            self.usage.increment(client_key, resource);
+        }
     }
 
     async fn fetch_environment(&self, keys: &EnvironmentKeys) -> Result<serde_json::Value> {
@@ -210,6 +229,14 @@ impl EnvironmentService {
                 .client
                 .get(&next_url)
                 .header("X-Environment-Key", server_side_key);
+            // Core excludes marked fetches from API usage — the proxy
+            // reports served requests instead. Static environments stay
+            // unmarked and keep their old billing.
+            if !self.environments.is_static(server_side_key) {
+                if let Some(proxy_key) = &self.settings.proxy_key {
+                    request = request.header("X-Proxy-Key", proxy_key);
+                }
+            }
             // If-Modified-Since is meaningful only on the first request; the
             // upstream pagination cursor (page_id) drives subsequent fetches.
             if document.is_none() {
@@ -263,7 +290,11 @@ impl EnvironmentService {
     }
 
     pub async fn get_environment(&self, environment_key: &str) -> Result<Arc<serde_json::Value>> {
-        let keys = self.resolve_key(environment_key)?;
+        // Lookup, not an SDK entry point: callers count via resolve_key.
+        let keys = self
+            .environments
+            .resolve(environment_key)
+            .ok_or_else(|| EdgeProxyError::FlagsmithUnknownKey(environment_key.to_string()))?;
 
         // Documents are cached under the client key, whichever key was presented
         self.cache
@@ -274,6 +305,7 @@ impl EnvironmentService {
 
     /// Get pre-serialized environment document bytes
     pub async fn get_environment_bytes(&self, environment_key: &str) -> Result<Arc<[u8]>> {
+        self.resolve_key(environment_key, Resource::EnvironmentDocument)?;
         let document = self.get_environment(environment_key).await?;
         Ok(serde_json::to_vec(&*document)?.into())
     }
@@ -298,7 +330,7 @@ impl EnvironmentService {
     ) -> Result<Vec<APIFeatureState>> {
         // TODO: a server-side key 503s here. Contexts are cached under the
         // client key but looked up by the presented key; map it like Python.
-        self.resolve_key(environment_key)?;
+        self.resolve_key(environment_key, Resource::Flags)?;
 
         let context = self
             .cache
@@ -342,7 +374,7 @@ impl EnvironmentService {
         identity: &IdentityWithTraits,
         environment_key: &str,
     ) -> Result<IdentityResponse> {
-        self.resolve_key(environment_key)?;
+        self.resolve_key(environment_key, Resource::Identities)?;
 
         // Get pre-computed context from cache
         let context = self
@@ -395,6 +427,78 @@ impl EnvironmentService {
             interval.tick().await;
             debug!("Polling environments...");
             self.refresh_environment_caches().await;
+        }
+    }
+
+    /// The usage endpoint's batch cap — MAX_USAGE_ROWS in the edge_proxy
+    /// app. Flushes are chunked to it so a large environment set can
+    /// never be rejected outright.
+    const MAX_ROWS_PER_FLUSH: usize = 1000;
+
+    /// Report the counts accumulated since the last flush to the usage
+    /// endpoint, in chunks the server accepts. A rejected (4xx) chunk is
+    /// dropped — retrying cannot heal a rejection, and losing one window
+    /// beats resending a poisoned batch forever. Any other failure keeps
+    /// the chunk for the next flush. Returns false when any chunk was
+    /// not accepted.
+    pub async fn flush_usage(&self) -> bool {
+        let Some(proxy_key) = &self.settings.proxy_key else {
+            return true;
+        };
+        let mut rows = self.usage.drain();
+        let url = format!("{}/proxy/usage/", self.settings.api_url);
+        let mut all_success = true;
+
+        while !rows.is_empty() {
+            let chunk: Vec<UsageRow> = rows
+                .drain(..rows.len().min(Self::MAX_ROWS_PER_FLUSH))
+                .collect();
+            let result = self
+                .client
+                .post(&url)
+                .header("X-Proxy-Key", proxy_key)
+                .json(&chunk)
+                .send()
+                .await;
+            match result {
+                Ok(response) if response.status().is_success() => {}
+                Ok(response) if response.status().is_client_error() => {
+                    error!(
+                        "Usage report rejected with {}: dropping {} rows",
+                        response.status(),
+                        chunk.len()
+                    );
+                    all_success = false;
+                }
+                Ok(response) => {
+                    error!("Failed to report usage: {}", response.status());
+                    self.usage.merge(chunk);
+                    all_success = false;
+                }
+                Err(e) => {
+                    error!("Failed to report usage: {}", e);
+                    self.usage.merge(chunk);
+                    all_success = false;
+                }
+            }
+        }
+
+        all_success
+    }
+
+    pub async fn flush_usage_periodically(self: Arc<Self>) {
+        if self.settings.proxy_key.is_none() {
+            return;
+        }
+        let mut interval = tokio::time::interval(Duration::from_secs(
+            self.settings.usage_flush_interval_seconds,
+        ));
+        // The first tick completes immediately, before anything is counted.
+        interval.tick().await;
+
+        loop {
+            interval.tick().await;
+            self.flush_usage().await;
         }
     }
 }

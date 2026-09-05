@@ -106,6 +106,10 @@ pub struct AppSettings {
     pub api_poll_frequency_seconds: u64,
     #[serde(default = "default_api_poll_timeout")]
     pub api_poll_timeout_seconds: u64,
+    // A zero interval would panic the flush task silently.
+    #[serde(default = "default_usage_flush_interval")]
+    #[validate(range(min = 1))]
+    pub usage_flush_interval_seconds: u64,
     #[serde(default)]
     pub server: ServerSettings,
     #[serde(default)]
@@ -126,6 +130,10 @@ fn default_api_poll_timeout() -> u64 {
     5
 }
 
+fn default_usage_flush_interval() -> u64 {
+    60
+}
+
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
@@ -134,6 +142,7 @@ impl Default for AppSettings {
             api_url: default_api_url(),
             api_poll_frequency_seconds: default_api_poll_frequency(),
             api_poll_timeout_seconds: default_api_poll_timeout(),
+            usage_flush_interval_seconds: default_usage_flush_interval(),
             server: ServerSettings::default(),
             logging: LoggingSettings::default(),
             health_check: HealthCheckSettings::default(),
@@ -182,6 +191,16 @@ mod tests {
     fn test_config_with_empty_proxy_key_is_invalid() {
         // Given an empty proxy_key, which would silently fail every sync
         let settings: AppSettings = serde_json::from_str(r#"{"proxy_key": ""}"#).unwrap();
+
+        // Then
+        assert!(settings.validate().is_err());
+    }
+
+    #[test]
+    fn test_config_with_zero_usage_flush_interval_is_invalid() {
+        // Given an interval that would panic the flush task
+        let settings: AppSettings =
+            serde_json::from_str(r#"{"usage_flush_interval_seconds": 0}"#).unwrap();
 
         // Then
         assert!(settings.validate().is_err());
