@@ -99,6 +99,8 @@ pub struct AppSettings {
     pub api_poll_frequency_seconds: u64,
     #[serde(default = "default_api_poll_timeout")]
     pub api_poll_timeout_seconds: u64,
+    #[serde(default = "default_allow_origins")]
+    pub allow_origins: Vec<String>,
     #[serde(default)]
     pub server: ServerSettings,
     #[serde(default)]
@@ -119,6 +121,10 @@ fn default_api_poll_timeout() -> u64 {
     5
 }
 
+fn default_allow_origins() -> Vec<String> {
+    vec!["*".to_string()]
+}
+
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
@@ -126,6 +132,7 @@ impl Default for AppSettings {
             api_url: default_api_url(),
             api_poll_frequency_seconds: default_api_poll_frequency(),
             api_poll_timeout_seconds: default_api_poll_timeout(),
+            allow_origins: default_allow_origins(),
             server: ServerSettings::default(),
             logging: LoggingSettings::default(),
             health_check: HealthCheckSettings::default(),
