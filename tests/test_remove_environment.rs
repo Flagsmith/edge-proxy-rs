@@ -1,7 +1,5 @@
-use edge_proxy::cache::{CacheKey, EnvironmentsCache, LocalMemEnvironmentsCache};
-use edge_proxy::config::settings::{
-    AppSettings, EndpointCacheSettings, EndpointCachesSettings, EnvironmentKeyPair,
-};
+use edge_proxy::cache::{EnvironmentsCache, LocalMemEnvironmentsCache};
+use edge_proxy::config::settings::{AppSettings, EnvironmentKeyPair};
 use edge_proxy::error::EdgeProxyError;
 use edge_proxy::models::IdentityWithTraits;
 use edge_proxy::services::environment::EnvironmentService;
@@ -19,20 +17,6 @@ fn create_settings(client_key: &str) -> AppSettings {
             client_side_key: client_key.to_string(),
         }],
         api_url: "http://test.api".to_string(),
-        endpoint_caches: EndpointCachesSettings {
-            flags: EndpointCacheSettings {
-                use_cache: true,
-                cache_max_size: 10,
-            },
-            identities: EndpointCacheSettings {
-                use_cache: true,
-                cache_max_size: 10,
-            },
-            environment_document: EndpointCacheSettings {
-                use_cache: true,
-                cache_max_size: 10,
-            },
-        },
         ..AppSettings::default()
     }
 }
@@ -84,11 +68,9 @@ async fn test_remove_by_server_key_removes_the_whole_environment() {
     ));
 }
 
-// The flags endpoint cache is consulted before the key gate, so removal
-// must actively clear it or a removed key keeps being served from cache.
 #[tokio::test]
-async fn test_removal_clears_primed_flags_endpoint_cache() {
-    // Given a primed flags endpoint cache
+async fn test_removed_key_is_rejected_by_flags() {
+    // Given
     let (service, client_key) = create_loaded_service().await;
     assert!(
         service
@@ -108,8 +90,8 @@ async fn test_removal_clears_primed_flags_endpoint_cache() {
 }
 
 #[tokio::test]
-async fn test_removal_clears_primed_identities_endpoint_cache() {
-    // Given a primed identities endpoint cache
+async fn test_removed_key_is_rejected_by_identities() {
+    // Given
     let (service, client_key) = create_loaded_service().await;
     let identity = IdentityWithTraits::new("some-user".to_string());
     assert!(
@@ -132,8 +114,8 @@ async fn test_removal_clears_primed_identities_endpoint_cache() {
 }
 
 #[tokio::test]
-async fn test_removal_clears_primed_environment_document_cache() {
-    // Given a primed environment-document endpoint cache
+async fn test_removed_key_is_rejected_by_environment_document() {
+    // Given
     let (service, client_key) = create_loaded_service().await;
     assert!(service.get_environment_bytes(&client_key).await.is_ok());
     assert!(service.get_environment_bytes(TEST_SERVER_KEY).await.is_ok());
@@ -166,18 +148,17 @@ async fn test_removing_an_unknown_key_leaves_other_environments_alone() {
 
 #[tokio::test]
 async fn test_removing_an_unknown_key_still_clears_cache_residue_under_it() {
-    // Given residue a lost race left in the endpoint cache under a key
-    // that no longer resolves
+    // Given a document a lost race left in the cache under a key that no
+    // longer resolves
     let (service, _client_key) = create_loaded_service().await;
-    let cache_key = CacheKey::new("ghost".to_string(), "flags".to_string(), String::new());
     service
-        .endpoint_cache
-        .put_flags(cache_key.clone(), serde_json::json!([]))
+        .cache
+        .put_environment("ghost", serde_json::json!({"api_key": "ghost"}))
         .await;
 
     // When removal is repeated for the unresolvable key
     service.remove_environment("ghost").await;
 
     // Then the residue is gone
-    assert!(service.endpoint_cache.get_flags(&cache_key).await.is_none());
+    assert!(service.cache.get_environment("ghost").await.is_none());
 }
