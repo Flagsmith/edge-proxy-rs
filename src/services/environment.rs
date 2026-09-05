@@ -231,9 +231,8 @@ impl EnvironmentService {
         environment_key: &str,
         feature_name: Option<&str>,
     ) -> Result<Vec<APIFeatureState>> {
-        // Validation only — lookups below still use the raw presented key, so
-        // a server-side key 503s on this endpoint (contexts are stored under
-        // the client key)
+        // TODO: a server-side key 503s here. Contexts are cached under the
+        // client key but looked up by the presented key; map it like Python.
         self.resolve_key(environment_key)?;
 
         let context = self
@@ -278,7 +277,6 @@ impl EnvironmentService {
         identity: &IdentityWithTraits,
         environment_key: &str,
     ) -> Result<IdentityResponse> {
-        // Validation only — same server-side-key caveat as get_flags_response_data
         self.resolve_key(environment_key)?;
 
         // Get pre-computed context from cache
