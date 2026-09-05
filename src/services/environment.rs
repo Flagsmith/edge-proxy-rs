@@ -156,25 +156,23 @@ impl EnvironmentService {
         Ok(response.json().await?)
     }
 
-    /// Resolve a presented key, counting the request for usage reporting.
-    /// Every SDK entry point resolves through here, so a served request
-    /// cannot be missed.
-    fn resolve_key(
-        &self,
-        environment_key: &str,
-        resource: Resource,
-    ) -> Result<Arc<EnvironmentKeys>> {
-        let keys = self
-            .environments
+    fn resolve_key(&self, environment_key: &str) -> Result<Arc<EnvironmentKeys>> {
+        self.environments
             .resolve(environment_key)
-            .ok_or_else(|| EdgeProxyError::FlagsmithUnknownKey(environment_key.to_string()))?;
-        self.track_usage(&keys.client_key, resource);
-        Ok(keys)
+            .ok_or_else(|| EdgeProxyError::FlagsmithUnknownKey(environment_key.to_string()))
     }
 
-    fn track_usage(&self, client_key: &str, resource: Resource) {
-        if self.settings.proxy_key.is_some() && !self.environments.is_static(client_key) {
-            self.usage.increment(client_key, resource);
+    /// Count a served request against its environment. Static environments
+    /// stay on core's own billing, so they are not reported.
+    pub fn track_usage(&self, environment_key: &str, resource: Resource) {
+        if self.settings.proxy_key.is_none() {
+            return;
+        }
+        let Some(keys) = self.environments.resolve(environment_key) else {
+            return;
+        };
+        if !self.environments.is_static(&keys.client_key) {
+            self.usage.increment(&keys.client_key, resource);
         }
     }
 
@@ -290,11 +288,7 @@ impl EnvironmentService {
     }
 
     pub async fn get_environment(&self, environment_key: &str) -> Result<Arc<serde_json::Value>> {
-        // Lookup, not an SDK entry point: callers count via resolve_key.
-        let keys = self
-            .environments
-            .resolve(environment_key)
-            .ok_or_else(|| EdgeProxyError::FlagsmithUnknownKey(environment_key.to_string()))?;
+        let keys = self.resolve_key(environment_key)?;
 
         // Documents are cached under the client key, whichever key was presented
         self.cache
@@ -305,7 +299,6 @@ impl EnvironmentService {
 
     /// Get pre-serialized environment document bytes
     pub async fn get_environment_bytes(&self, environment_key: &str) -> Result<Arc<[u8]>> {
-        self.resolve_key(environment_key, Resource::EnvironmentDocument)?;
         let document = self.get_environment(environment_key).await?;
         Ok(serde_json::to_vec(&*document)?.into())
     }
@@ -330,7 +323,7 @@ impl EnvironmentService {
     ) -> Result<Vec<APIFeatureState>> {
         // TODO: a server-side key 503s here. Contexts are cached under the
         // client key but looked up by the presented key; map it like Python.
-        self.resolve_key(environment_key, Resource::Flags)?;
+        self.resolve_key(environment_key)?;
 
         let context = self
             .cache
@@ -374,7 +367,7 @@ impl EnvironmentService {
         identity: &IdentityWithTraits,
         environment_key: &str,
     ) -> Result<IdentityResponse> {
-        self.resolve_key(environment_key, Resource::Identities)?;
+        self.resolve_key(environment_key)?;
 
         // Get pre-computed context from cache
         let context = self

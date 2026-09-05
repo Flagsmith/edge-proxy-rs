@@ -3,11 +3,13 @@ pub mod extractors;
 pub mod flags;
 pub mod health;
 pub mod identities;
+pub mod usage;
 
 use crate::config::AppSettings;
 use crate::services::EnvironmentService;
 use axum::{
     Router,
+    middleware::from_fn_with_state,
     routing::{get, post},
 };
 use std::sync::Arc;
@@ -15,6 +17,10 @@ use tower_http::{
     compression::CompressionLayer, cors::CorsLayer, normalize_path::NormalizePath,
     trace::TraceLayer,
 };
+
+const FLAGS_PATH: &str = "/api/v1/flags";
+const IDENTITIES_PATH: &str = "/api/v1/identities";
+const ENVIRONMENT_DOCUMENT_PATH: &str = "/api/v1/environment-document";
 
 pub fn create_router(settings: AppSettings) -> (Router, Arc<EnvironmentService>) {
     let environment_service = Arc::new(EnvironmentService::new(settings));
@@ -26,16 +32,20 @@ pub fn create_router(settings: AppSettings) -> (Router, Arc<EnvironmentService>)
         .route("/proxy/health/readiness", get(health::health_check))
         .route("/proxy/health/liveness", get(health::liveness_check))
         // Flags routes (with and without trailing slash)
-        .route("/api/v1/flags", get(flags::get_flags))
+        .route(FLAGS_PATH, get(flags::get_flags))
         // Identities routes (with and without trailing slash)
-        .route("/api/v1/identities", get(identities::get_identities))
-        .route("/api/v1/identities", post(identities::post_identities))
+        .route(IDENTITIES_PATH, get(identities::get_identities))
+        .route(IDENTITIES_PATH, post(identities::post_identities))
         // Environment document route
         .route(
-            "/api/v1/environment-document",
+            ENVIRONMENT_DOCUMENT_PATH,
             get(environment_document::get_environment_document),
         )
         // Middleware layers
+        .layer(from_fn_with_state(
+            environment_service.clone(),
+            usage::track_usage,
+        ))
         .layer(CompressionLayer::new())
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
