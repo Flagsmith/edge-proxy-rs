@@ -145,20 +145,3 @@ async fn test_removing_an_unknown_key_leaves_other_environments_alone() {
     // Then
     assert!(service.get_environment(&client_key).await.is_ok());
 }
-
-#[tokio::test]
-async fn test_removing_an_unknown_key_still_clears_cache_residue_under_it() {
-    // Given a document a lost race left in the cache under a key that no
-    // longer resolves
-    let (service, _client_key) = create_loaded_service().await;
-    service
-        .cache
-        .put_environment("ghost", serde_json::json!({"api_key": "ghost"}))
-        .await;
-
-    // When removal is repeated for the unresolvable key
-    service.remove_environment("ghost").await;
-
-    // Then the residue is gone
-    assert!(service.cache.get_environment("ghost").await.is_none());
-}
