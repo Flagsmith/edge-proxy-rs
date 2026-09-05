@@ -1,5 +1,6 @@
 use crate::cache::{EnvironmentsCache, LocalMemEnvironmentsCache};
-use crate::config::settings::{AppSettings, EnvironmentKeyPair};
+use crate::config::settings::AppSettings;
+use crate::environments::{EnvironmentIndex, EnvironmentKeys};
 use crate::error::{EdgeProxyError, Result};
 use crate::models::{APIFeatureState, IdentityResponse, IdentityWithTraits};
 use crate::services::feature_utils::filter_out_server_key_only_flag_results;
@@ -9,7 +10,6 @@ use flagsmith_flag_engine::engine_eval::{FlagResult, add_identity_to_context};
 use flagsmith_flag_engine::identities::Trait as FlagsmithTrait;
 use reqwest::header::HeaderMap;
 use reqwest::{Client, Url};
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
@@ -20,8 +20,7 @@ pub struct EnvironmentService {
     client: Client,
     pub settings: AppSettings,
     pub last_updated_at: Arc<RwLock<Option<DateTime<Utc>>>>,
-    key_mapping: HashMap<String, String>, // any_key -> server_key (for validation)
-    server_to_client: HashMap<String, String>, // server_key -> client_key (for cache lookup)
+    environments: EnvironmentIndex,
 }
 
 impl EnvironmentService {
@@ -32,23 +31,14 @@ impl EnvironmentService {
             .build()
             .expect("Failed to create HTTP client");
 
-        let mut key_mapping = HashMap::new();
-        let mut server_to_client = HashMap::new();
-        for pair in &settings.environment_key_pairs {
-            key_mapping.insert(pair.client_side_key.clone(), pair.server_side_key.clone());
-            // Also allow server keys to map to themselves
-            key_mapping.insert(pair.server_side_key.clone(), pair.server_side_key.clone());
-            // Map server key to client key for cache lookup
-            server_to_client.insert(pair.server_side_key.clone(), pair.client_side_key.clone());
-        }
+        let environments = EnvironmentIndex::from_settings(&settings.environment_key_pairs);
 
         Self {
             cache: Arc::new(LocalMemEnvironmentsCache::new()),
             client,
             settings,
             last_updated_at: Arc::new(RwLock::new(None)),
-            key_mapping,
-            server_to_client,
+            environments,
         }
     }
 
@@ -61,25 +51,19 @@ impl EnvironmentService {
     pub async fn refresh_environment_caches(&self) -> bool {
         let mut all_success = true;
 
-        for pair in &self.settings.environment_key_pairs {
-            match self.fetch_environment(pair).await {
+        for keys in self.environments.snapshot() {
+            match self.fetch_environment(&keys).await {
                 Ok(document) => {
-                    let changed = self
-                        .cache
-                        .put_environment(&pair.client_side_key, document)
-                        .await;
+                    let changed = self.cache.put_environment(&keys.client_key, document).await;
 
                     if changed {
-                        info!(
-                            "Environment cache updated for key: {}",
-                            pair.client_side_key
-                        );
+                        info!("Environment cache updated for key: {}", keys.client_key);
                     }
                 }
                 Err(e) => {
                     error!(
                         "Failed to fetch environment for key {}: {}",
-                        pair.server_side_key, e
+                        keys.client_key, e
                     );
                     all_success = false;
                 }
@@ -94,14 +78,61 @@ impl EnvironmentService {
         all_success
     }
 
-    async fn fetch_environment(&self, pair: &EnvironmentKeyPair) -> Result<serde_json::Value> {
+    /// Stop serving an environment: requests presenting any of its keys
+    /// are rejected, and everything cached for it is cleared.
+    pub async fn remove_environment(&self, environment_key: &str) {
+        let Some(keys) = self.environments.remove(environment_key) else {
+            return;
+        };
+        self.cache.remove_environment(&keys.client_key).await;
+        info!("Environment removed for key: {}", keys.client_key);
+    }
+
+    fn resolve_key(&self, environment_key: &str) -> Result<Arc<EnvironmentKeys>> {
+        self.environments
+            .resolve(environment_key)
+            .ok_or_else(|| EdgeProxyError::FlagsmithUnknownKey(environment_key.to_string()))
+    }
+
+    async fn fetch_environment(&self, keys: &EnvironmentKeys) -> Result<serde_json::Value> {
+        let server_key = keys.valid_server_key().ok_or_else(|| {
+            EdgeProxyError::ServiceUnavailable(format!(
+                "no active server-side key for environment {}",
+                keys.client_key
+            ))
+        })?;
+
         let if_modified_since = self
             .cache
-            .get_environment(&pair.client_side_key)
+            .get_environment(&keys.client_key)
             .await
             .as_deref()
             .and_then(compute_if_modified_since);
 
+        match self
+            .fetch_document(&server_key.key, if_modified_since)
+            .await?
+        {
+            Some(document) => Ok(document),
+            // 304: upstream confirmed the cached copy is current.
+            None => self
+                .cache
+                .get_environment(&keys.client_key)
+                .await
+                .map(|arc| (*arc).clone())
+                .ok_or_else(|| {
+                    EdgeProxyError::ServiceUnavailable("Cache inconsistency".to_string())
+                }),
+        }
+    }
+
+    /// Fetch the (paginated) environment document authenticated by
+    /// `server_side_key`. Returns `Ok(None)` on 304 Not Modified.
+    async fn fetch_document(
+        &self,
+        server_side_key: &str,
+        if_modified_since: Option<String>,
+    ) -> Result<Option<serde_json::Value>> {
         let mut next_url = format!("{}/environment-document/", self.settings.api_url);
         let mut document: Option<serde_json::Value> = None;
         let started_at = Instant::now();
@@ -113,7 +144,7 @@ impl EnvironmentService {
             let mut request = self
                 .client
                 .get(&next_url)
-                .header("X-Environment-Key", &pair.server_side_key);
+                .header("X-Environment-Key", server_side_key);
             // If-Modified-Since is meaningful only on the first request; the
             // upstream pagination cursor (page_id) drives subsequent fetches.
             if document.is_none() {
@@ -125,14 +156,7 @@ impl EnvironmentService {
             let response = request.send().await?;
 
             if document.is_none() && response.status() == reqwest::StatusCode::NOT_MODIFIED {
-                return self
-                    .cache
-                    .get_environment(&pair.client_side_key)
-                    .await
-                    .map(|arc| (*arc).clone())
-                    .ok_or_else(|| {
-                        EdgeProxyError::ServiceUnavailable("Cache inconsistency".to_string())
-                    });
+                return Ok(None);
             }
 
             response.error_for_status_ref()?;
@@ -151,7 +175,7 @@ impl EnvironmentService {
             }
         }
 
-        document.ok_or_else(|| {
+        document.map(Some).ok_or_else(|| {
             EdgeProxyError::ServiceUnavailable("environment-document returned no pages".to_string())
         })
     }
@@ -174,22 +198,11 @@ impl EnvironmentService {
     }
 
     pub async fn get_environment(&self, environment_key: &str) -> Result<Arc<serde_json::Value>> {
-        if !self.key_mapping.contains_key(environment_key) {
-            return Err(EdgeProxyError::FlagsmithUnknownKey(
-                environment_key.to_string(),
-            ));
-        }
+        let keys = self.resolve_key(environment_key)?;
 
-        // Map server key to client key for cache lookup (cache stores by client key)
-        let client_key = self
-            .server_to_client
-            .get(environment_key)
-            .map(|s| s.as_str())
-            .unwrap_or(environment_key);
-
-        // Get from cache (returns Arc<Value> to avoid cloning)
+        // Documents are cached under the client key, whichever key was presented
         self.cache
-            .get_environment(client_key)
+            .get_environment(&keys.client_key)
             .await
             .ok_or_else(|| EdgeProxyError::ServiceUnavailable("Environment not loaded".to_string()))
     }
@@ -218,11 +231,9 @@ impl EnvironmentService {
         environment_key: &str,
         feature_name: Option<&str>,
     ) -> Result<Vec<APIFeatureState>> {
-        if !self.key_mapping.contains_key(environment_key) {
-            return Err(EdgeProxyError::FlagsmithUnknownKey(
-                environment_key.to_string(),
-            ));
-        }
+        // TODO: a server-side key 503s here. Contexts are cached under the
+        // client key but looked up by the presented key; map it like Python.
+        self.resolve_key(environment_key)?;
 
         let context = self
             .cache
@@ -266,12 +277,7 @@ impl EnvironmentService {
         identity: &IdentityWithTraits,
         environment_key: &str,
     ) -> Result<IdentityResponse> {
-        // Verify the key is valid
-        if !self.key_mapping.contains_key(environment_key) {
-            return Err(EdgeProxyError::FlagsmithUnknownKey(
-                environment_key.to_string(),
-            ));
-        }
+        self.resolve_key(environment_key)?;
 
         // Get pre-computed context from cache
         let context = self

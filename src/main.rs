@@ -2,7 +2,7 @@ use edge_proxy::config::logging::setup_logging;
 use edge_proxy::config::settings::get_settings;
 use edge_proxy::routes::create_router;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use tracing::info;
+use tracing::{info, warn};
 
 const DEFAULT_HOST: IpAddr = IpAddr::V4(Ipv4Addr::UNSPECIFIED);
 
@@ -18,6 +18,16 @@ async fn main() -> anyhow::Result<()> {
         "Polling frequency: {}s",
         settings.api_poll_frequency_seconds
     );
+
+    // serde defaults environment_key_pairs, so a typo'd field name parses
+    // as an empty set and the proxy would report healthy while rejecting
+    // every request — make that state loud.
+    if settings.environment_key_pairs.is_empty() {
+        warn!(
+            "No environments configured: environment_key_pairs is empty or \
+             missing, so every request will be rejected with 401"
+        );
+    }
 
     let (app, environment_service) = create_router(settings.clone());
 

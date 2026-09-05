@@ -91,6 +91,8 @@ impl Default for HealthCheckSettings {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Validate)]
 pub struct AppSettings {
+    // Optional so the environment set can also come from runtime discovery
+    #[serde(default)]
     #[validate(nested)]
     pub environment_key_pairs: Vec<EnvironmentKeyPair>,
     #[serde(default = "default_api_url")]
@@ -169,6 +171,16 @@ pub fn get_settings() -> Result<AppSettings> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_config_without_environment_key_pairs_parses_to_empty_valid_set() {
+        // Given a config file omitting environment_key_pairs entirely
+        let settings: AppSettings = serde_json::from_str("{}").unwrap();
+
+        // Then it behaves like an explicitly empty list and validates
+        assert!(settings.environment_key_pairs.is_empty());
+        assert!(settings.validate().is_ok());
+    }
 
     #[test]
     fn test_client_side_key_validation_valid() {

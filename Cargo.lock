@@ -517,6 +517,7 @@ dependencies = [
  "flagsmith-flag-engine",
  "http",
  "mockall",
+ "parking_lot",
  "reqwest",
  "serde",
  "serde_json",
