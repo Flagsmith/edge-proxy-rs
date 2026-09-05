@@ -2,7 +2,9 @@ use crate::cache::{EnvironmentsCache, LocalMemEnvironmentsCache};
 use crate::config::settings::AppSettings;
 use crate::environments::{EnvironmentIndex, EnvironmentKeys};
 use crate::error::{EdgeProxyError, Result};
-use crate::models::{APIFeatureState, IdentityResponse, IdentityWithTraits};
+use crate::models::{
+    APIFeatureState, IdentityResponse, IdentityWithTraits, ProxyConfigEnvironment,
+};
 use crate::services::feature_utils::filter_out_server_key_only_flag_results;
 use chrono::{DateTime, Utc};
 use flagsmith_flag_engine::engine::get_evaluation_result;
@@ -49,7 +51,9 @@ impl EnvironmentService {
     }
 
     pub async fn refresh_environment_caches(&self) -> bool {
-        let mut all_success = true;
+        // Sync first so an environment added to the proxy config gets its
+        // document fetched in the same pass.
+        let mut all_success = self.sync_proxy_config().await;
 
         for keys in self.environments.snapshot() {
             match self.fetch_environment(&keys).await {
@@ -86,6 +90,67 @@ impl EnvironmentService {
         };
         self.cache.remove_environment(&keys.client_key).await;
         info!("Environment removed for key: {}", keys.client_key);
+    }
+
+    /// Bring the served environments in line with the proxy config, when
+    /// one is configured. Returns false when the fetch fails, keeping the
+    /// current set untouched — an outage or a rejected proxy key can never
+    /// wipe the proxy. An environment is removed only when a successful
+    /// fetch no longer lists it.
+    async fn sync_proxy_config(&self) -> bool {
+        let Some(proxy_key) = &self.settings.proxy_key else {
+            return true;
+        };
+
+        let config = match self.fetch_proxy_config(proxy_key).await {
+            Ok(config) => config,
+            Err(e) => {
+                error!("Failed to fetch proxy config: {}", e);
+                return false;
+            }
+        };
+
+        let desired: Vec<EnvironmentKeys> = config
+            .into_iter()
+            .map(EnvironmentKeys::from)
+            .filter(|keys| {
+                let usable = keys.valid_server_key().is_some();
+                if !usable {
+                    debug!(
+                        "Skipping proxy config environment {}: no usable server-side key",
+                        keys.client_key
+                    );
+                }
+                usable
+            })
+            .collect();
+        let result = self.environments.sync_to(desired);
+
+        for keys in &result.removed {
+            self.cache.remove_environment(&keys.client_key).await;
+            info!("Environment removed from proxy config: {}", keys.client_key);
+        }
+        if result.changed > 0 || !result.removed.is_empty() {
+            info!(
+                "Proxy config applied: {} changed, {} removed",
+                result.changed,
+                result.removed.len()
+            );
+        }
+
+        true
+    }
+
+    async fn fetch_proxy_config(&self, proxy_key: &str) -> Result<Vec<ProxyConfigEnvironment>> {
+        let url = format!("{}/proxy/config/", self.settings.api_url);
+        let response = self
+            .client
+            .get(&url)
+            .header("X-Proxy-Key", proxy_key)
+            .send()
+            .await?;
+        response.error_for_status_ref()?;
+        Ok(response.json().await?)
     }
 
     fn resolve_key(&self, environment_key: &str) -> Result<Arc<EnvironmentKeys>> {
@@ -322,6 +387,9 @@ impl EnvironmentService {
         let mut interval = tokio::time::interval(Duration::from_secs(
             self.settings.api_poll_frequency_seconds,
         ));
+        // The first tick completes immediately; the caller has already done
+        // the initial refresh, so consume it to poll one full period later.
+        interval.tick().await;
 
         loop {
             interval.tick().await;

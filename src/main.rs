@@ -19,25 +19,30 @@ async fn main() -> anyhow::Result<()> {
         settings.api_poll_frequency_seconds
     );
 
-    // serde defaults environment_key_pairs, so a typo'd field name parses
-    // as an empty set and the proxy would report healthy while rejecting
-    // every request — make that state loud.
-    if settings.environment_key_pairs.is_empty() {
+    // serde defaults these fields, so a typo'd field name parses as an
+    // empty set and the proxy would report healthy while rejecting every
+    // request — make that state loud.
+    if settings.environment_key_pairs.is_empty() && settings.proxy_key.is_none() {
         warn!(
-            "No environments configured: environment_key_pairs is empty or \
-             missing, so every request will be rejected with 401"
+            "No environments configured: environment_key_pairs and proxy_key \
+             are both empty or missing, so every request will be rejected \
+             with 401"
         );
     }
 
     let (app, environment_service) = create_router(settings.clone());
 
+    // Refreshes must never overlap: a delayed older poll finishing after a
+    // newer one could restore removed environments or rotated keys. The
+    // poll loop is serial, so it just has to start after the initial
+    // refresh completes.
+    info!("Loading initial environment data...");
+    environment_service.refresh_environment_caches().await;
+
     let polling_service = environment_service.clone();
     tokio::spawn(async move {
         polling_service.poll_environments().await;
     });
-
-    info!("Loading initial environment data...");
-    environment_service.refresh_environment_caches().await;
 
     let addr = SocketAddr::from((
         settings

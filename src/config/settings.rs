@@ -95,6 +95,11 @@ pub struct AppSettings {
     #[serde(default)]
     #[validate(nested)]
     pub environment_key_pairs: Vec<EnvironmentKeyPair>,
+    /// Credential for the proxy config endpoint; when set, the served
+    /// environments are kept in sync with it at every poll.
+    #[serde(default)]
+    #[validate(length(min = 1))]
+    pub proxy_key: Option<String>,
     #[serde(default = "default_api_url")]
     pub api_url: String,
     #[serde(default = "default_api_poll_frequency")]
@@ -125,6 +130,7 @@ impl Default for AppSettings {
     fn default() -> Self {
         Self {
             environment_key_pairs: vec![],
+            proxy_key: None,
             api_url: default_api_url(),
             api_poll_frequency_seconds: default_api_poll_frequency(),
             api_poll_timeout_seconds: default_api_poll_timeout(),
@@ -171,6 +177,26 @@ pub fn get_settings() -> Result<AppSettings> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_config_with_empty_proxy_key_is_invalid() {
+        // Given an empty proxy_key, which would silently fail every sync
+        let settings: AppSettings = serde_json::from_str(r#"{"proxy_key": ""}"#).unwrap();
+
+        // Then
+        assert!(settings.validate().is_err());
+    }
+
+    #[test]
+    fn test_config_with_only_a_proxy_key_is_valid() {
+        // Given a config file that relies entirely on the proxy config
+        let settings: AppSettings = serde_json::from_str(r#"{"proxy_key": "pk.secret"}"#).unwrap();
+
+        // Then
+        assert_eq!(settings.proxy_key.as_deref(), Some("pk.secret"));
+        assert!(settings.environment_key_pairs.is_empty());
+        assert!(settings.validate().is_ok());
+    }
 
     #[test]
     fn test_config_without_environment_key_pairs_parses_to_empty_valid_set() {
