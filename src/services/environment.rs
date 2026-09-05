@@ -95,9 +95,6 @@ impl EnvironmentService {
     }
 
     async fn fetch_environment(&self, keys: &EnvironmentKeys) -> Result<serde_json::Value> {
-        // An environment stuck here fails every poll, keeping /health red
-        // until a config change — or, once reconciliation exists, until it
-        // removes or re-keys the environment.
         let server_key = keys.valid_server_key().ok_or_else(|| {
             EdgeProxyError::ServiceUnavailable(format!(
                 "no active server-side key for environment {}",
