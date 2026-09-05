@@ -102,20 +102,6 @@ Edge Proxy expects to load configuration from `./config.json`.
     "host": "0.0.0.0",
     "port": 8000
   },
-  "endpoint_caches": {
-    "flags": {
-      "use_cache": false,
-      "cache_max_size": 128
-    },
-    "identities": {
-      "use_cache": false,
-      "cache_max_size": 128
-    },
-    "environment_document": {
-      "use_cache": true,
-      "cache_max_size": 128
-    }
-  },
   "health_check": {
     "environment_update_grace_period_seconds": 120
   }
@@ -195,8 +181,7 @@ src/
 ├── services/               # Business logic
 │   └── environment.rs      # Flag evaluation, polling
 ├── cache/                  # Caching layer
-│   ├── environment.rs      # Environment document cache
-│   └── endpoint.rs         # LRU response cache
+│   └── environment.rs      # Environment document cache
 └── models/                 # Domain models
     ├── request.rs          # IdentityWithTraits
     └── response.rs         # APIFeatureState
