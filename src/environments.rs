@@ -1,7 +1,8 @@
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
+use parking_lot::RwLock;
 
 use crate::config::settings::EnvironmentKeyPair;
 
@@ -47,7 +48,7 @@ impl EnvironmentKeys {
 /// the config is last-one-wins on insert, and removing either environment
 /// un-indexes the shared key for both.
 ///
-/// Uses `std::sync::RwLock`, not tokio's: guards are held only for a map
+/// Uses `parking_lot::RwLock`, not tokio's: guards are held only for a map
 /// operation, never across an await, and lookups stay callable from
 /// synchronous code.
 #[derive(Default)]
@@ -74,11 +75,7 @@ impl EnvironmentIndex {
     /// Resolve a presented key — client- or server-side — to its
     /// environment's keys.
     pub fn resolve(&self, key: &str) -> Option<Arc<EnvironmentKeys>> {
-        self.by_key
-            .read()
-            .expect("environment index lock poisoned")
-            .get(key)
-            .cloned()
+        self.by_key.read().get(key).cloned()
     }
 
     /// Insert or replace an environment's keys, dropping index entries
@@ -88,10 +85,7 @@ impl EnvironmentIndex {
     /// invalidating whatever is cached under keys that stopped resolving.
     pub fn insert(&self, keys: EnvironmentKeys) -> Option<Arc<EnvironmentKeys>> {
         let keys = Arc::new(keys);
-        let mut by_key = self
-            .by_key
-            .write()
-            .expect("environment index lock poisoned");
+        let mut by_key = self.by_key.write();
 
         let previous = by_key.get(&keys.client_key).cloned();
         if let Some(previous) = &previous {
@@ -110,10 +104,7 @@ impl EnvironmentIndex {
     /// Remove the environment `key` resolves to (any of its keys works),
     /// returning its keys so the caller can clear per-key caches.
     pub fn remove(&self, key: &str) -> Option<Arc<EnvironmentKeys>> {
-        let mut by_key = self
-            .by_key
-            .write()
-            .expect("environment index lock poisoned");
+        let mut by_key = self.by_key.write();
         let keys = by_key.get(key).cloned()?;
 
         by_key.remove(&keys.client_key);
@@ -127,7 +118,7 @@ impl EnvironmentIndex {
     /// Point-in-time snapshot of every environment's keys, ordered by
     /// client key so callers iterate deterministically.
     pub fn snapshot(&self) -> Vec<Arc<EnvironmentKeys>> {
-        let by_key = self.by_key.read().expect("environment index lock poisoned");
+        let by_key = self.by_key.read();
         let mut snapshot: Vec<Arc<EnvironmentKeys>> = by_key
             .iter()
             .filter(|(key, keys)| key.as_str() == keys.client_key)
