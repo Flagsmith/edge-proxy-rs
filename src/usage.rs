@@ -1,6 +1,7 @@
-use serde::Serialize;
 use std::collections::HashMap;
-use std::sync::Mutex;
+
+use parking_lot::Mutex;
+use serde::Serialize;
 
 /// An SDK endpoint as the usage endpoint names it.
 #[derive(Serialize, Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -23,25 +24,26 @@ pub struct UsageRow {
 /// resource. Keyed by resolved client keys only, so the map is bounded by
 /// the served environment set.
 ///
-/// Uses `std::sync::Mutex`: every operation writes, and guards are held
-/// only for a map operation, never across an await.
+/// Uses `parking_lot::Mutex`, not tokio's: every operation writes, and
+/// guards are held only for a map operation, never across an await.
 #[derive(Default)]
 pub struct UsageCounts {
-    by_key: Mutex<HashMap<(String, Resource), u64>>,
+    count_by_environment_and_resource: Mutex<HashMap<(String, Resource), u64>>,
 }
 
 impl UsageCounts {
     pub fn increment(&self, client_key: &str, resource: Resource) {
-        let mut by_key = self.by_key.lock().expect("usage counts lock poisoned");
-        *by_key
+        let mut count_by_environment_and_resource = self.count_by_environment_and_resource.lock();
+        *count_by_environment_and_resource
             .entry((client_key.to_string(), resource))
             .or_default() += 1;
     }
 
     /// Take everything counted so far, leaving the map empty.
     pub fn drain(&self) -> Vec<UsageRow> {
-        let by_key = std::mem::take(&mut *self.by_key.lock().expect("usage counts lock poisoned"));
-        by_key
+        let count_by_environment_and_resource =
+            std::mem::take(&mut *self.count_by_environment_and_resource.lock());
+        count_by_environment_and_resource
             .into_iter()
             .map(|((client_side_key, resource), count)| UsageRow {
                 client_side_key,
@@ -54,9 +56,9 @@ impl UsageCounts {
     /// Add drained counts back, on top of anything counted since — for
     /// when a flush fails and the rows must survive until the next one.
     pub fn merge(&self, counts: Vec<UsageRow>) {
-        let mut by_key = self.by_key.lock().expect("usage counts lock poisoned");
+        let mut count_by_environment_and_resource = self.count_by_environment_and_resource.lock();
         for row in counts {
-            let entry = by_key
+            let entry = count_by_environment_and_resource
                 .entry((row.client_side_key, row.resource))
                 .or_default();
             *entry = entry.saturating_add(row.count);
