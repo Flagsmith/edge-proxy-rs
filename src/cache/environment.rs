@@ -20,6 +20,10 @@ pub trait EnvironmentsCache: Send + Sync {
     /// Store environment document and compute context. Returns true if changed.
     async fn put_environment(&self, environment_key: &str, document: Value) -> bool;
 
+    /// Remove everything stored for an environment (document, context,
+    /// identity overrides)
+    async fn remove_environment(&self, environment_key: &str);
+
     /// Get identity override data
     async fn get_identity(&self, environment_api_key: &str, identifier: &str) -> Option<Value>;
 }
@@ -98,10 +102,67 @@ impl EnvironmentsCache for LocalMemEnvironmentsCache {
         changed
     }
 
+    async fn remove_environment(&self, environment_key: &str) {
+        // Same guard order as put_environment so the two can't deadlock
+        let mut environments = self.environments.write().await;
+        let mut contexts = self.contexts.write().await;
+        let mut identity_overrides = self.identity_overrides.write().await;
+
+        environments.remove(environment_key);
+        contexts.remove(environment_key);
+        identity_overrides.remove(environment_key);
+    }
+
     async fn get_identity(&self, environment_api_key: &str, identifier: &str) -> Option<Value> {
         let identity_overrides = self.identity_overrides.read().await;
         identity_overrides
             .get(environment_api_key)
             .and_then(|identities| identities.get(identifier).cloned())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[tokio::test]
+    async fn test_remove_environment_clears_all_stored_state() {
+        // Given
+        let cache = LocalMemEnvironmentsCache::new();
+        let document = json!({
+            "api_key": "client_a",
+            "identity_overrides": [{"identifier": "user_1"}],
+        });
+        cache.put_environment("client_a", document).await;
+        assert!(cache.get_environment("client_a").await.is_some());
+        assert!(cache.get_identity("client_a", "user_1").await.is_some());
+
+        // When
+        cache.remove_environment("client_a").await;
+
+        // Then
+        assert!(cache.get_environment("client_a").await.is_none());
+        assert!(cache.get_context("client_a").await.is_none());
+        assert!(cache.get_identity("client_a", "user_1").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_remove_environment_leaves_other_environments_alone() {
+        // Given
+        let cache = LocalMemEnvironmentsCache::new();
+        cache
+            .put_environment("client_a", json!({"api_key": "client_a"}))
+            .await;
+        cache
+            .put_environment("client_b", json!({"api_key": "client_b"}))
+            .await;
+
+        // When
+        cache.remove_environment("client_a").await;
+
+        // Then
+        assert!(cache.get_environment("client_a").await.is_none());
+        assert!(cache.get_environment("client_b").await.is_some());
     }
 }
