@@ -5,7 +5,7 @@ pub mod health;
 pub mod identities;
 
 use crate::config::AppSettings;
-use crate::middleware::{cors, usage_tracking};
+use crate::middleware::{cors, usage};
 use crate::services::EnvironmentService;
 use axum::{
     Router,
@@ -42,7 +42,7 @@ pub fn create_router(settings: AppSettings) -> (Router, Arc<EnvironmentService>)
         // Middleware layers
         .layer(from_fn_with_state(
             environment_service.clone(),
-            usage_tracking::track_usage,
+            usage::track_usage,
         ))
         .layer(CompressionLayer::new())
         .layer(cors)
