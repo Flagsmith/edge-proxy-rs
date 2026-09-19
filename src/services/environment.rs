@@ -510,6 +510,9 @@ impl EnvironmentService {
         let mut interval = tokio::time::interval(Duration::from_secs(
             self.settings.usage_flush_interval_seconds,
         ));
+        // A flush that overruns the interval (core slow or down) must not be
+        // followed by a burst of catch-up flushes hammering it further.
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         // The first tick completes immediately, before anything is counted.
         interval.tick().await;
 
