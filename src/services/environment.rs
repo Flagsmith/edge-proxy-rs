@@ -30,6 +30,9 @@ impl EnvironmentService {
         let client = Client::builder()
             .timeout(Duration::from_secs(settings.api_poll_timeout_seconds))
             .gzip(true)
+            // reqwest keeps custom headers across redirects; never let one
+            // carry the environment or proxy key to another host.
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .expect("Failed to create HTTP client");
 
@@ -153,6 +156,10 @@ impl EnvironmentService {
         Ok(response.json().await?)
     }
 
+    pub fn resolve(&self, environment_key: &str) -> Option<Arc<EnvironmentKeys>> {
+        self.environments.resolve(environment_key)
+    }
+
     fn resolve_key(&self, environment_key: &str) -> Result<Arc<EnvironmentKeys>> {
         self.environments
             .resolve(environment_key)
@@ -210,6 +217,11 @@ impl EnvironmentService {
                 .client
                 .get(&next_url)
                 .header("X-Environment-Key", server_side_key);
+            // Core excludes marked fetches from API usage; the proxy reports
+            // served requests instead.
+            if let Some(proxy_key) = &self.settings.proxy_key {
+                request = request.header("X-Proxy-Key", proxy_key);
+            }
             // If-Modified-Since is meaningful only on the first request; the
             // upstream pagination cursor (page_id) drives subsequent fetches.
             if document.is_none() {
@@ -226,7 +238,7 @@ impl EnvironmentService {
 
             response.error_for_status_ref()?;
 
-            let next_link = parse_next_link(response.headers(), &self.settings.api_url);
+            let next_link = parse_next_link(response.headers(), &self.settings.api_url)?;
             let body: serde_json::Value = response.json().await?;
 
             match document.as_mut() {
@@ -439,12 +451,15 @@ fn merge_paginated_overrides(base: &mut serde_json::Value, page: serde_json::Val
 
 /// Parse the `Link` response header for the next-page URL (RFC 5988).
 ///
-/// Returns an absolute URL, resolving relative targets against `api_url`.
-fn parse_next_link(headers: &HeaderMap, api_url: &str) -> Option<String> {
-    let base = Url::parse(api_url).ok()?;
+fn parse_next_link(headers: &HeaderMap, api_url: &str) -> Result<Option<String>> {
+    let Ok(base) = Url::parse(api_url) else {
+        return Ok(None);
+    };
 
     for header_value in headers.get_all(reqwest::header::LINK).iter() {
-        let raw = header_value.to_str().ok()?;
+        let Ok(raw) = header_value.to_str() else {
+            return Ok(None);
+        };
         for segment in raw.split(',') {
             let segment = segment.trim();
             let target = match (segment.find('<'), segment.find('>')) {
@@ -455,12 +470,18 @@ fn parse_next_link(headers: &HeaderMap, api_url: &str) -> Option<String> {
             if !is_next_rel(params) {
                 continue;
             }
-            if let Ok(absolute) = base.join(target) {
-                return Some(absolute.into());
+            let Ok(absolute) = base.join(target) else {
+                continue;
+            };
+            if absolute.origin() != base.origin() {
+                return Err(EdgeProxyError::ServiceUnavailable(format!(
+                    "refusing cross-origin pagination link {absolute}"
+                )));
             }
+            return Ok(Some(absolute.into()));
         }
     }
-    None
+    Ok(None)
 }
 
 fn is_next_rel(params: &str) -> bool {
@@ -498,40 +519,58 @@ mod tests {
         );
         let next = parse_next_link(&headers, "https://edge.api.flagsmith.com/api/v1").unwrap();
         assert_eq!(
-            next,
+            next.unwrap(),
             "https://edge.api.flagsmith.com/api/v1/environment-document/?page_id=identity_override%3A1%3Aabc"
         );
     }
 
     #[test]
-    fn parse_next_link_absolute() {
-        let headers =
-            link("<https://example.test/api/v1/environment-document/?page_id=x>; rel=\"next\"");
+    fn parse_next_link_absolute_same_origin() {
+        let headers = link(
+            "<https://edge.api.flagsmith.com/api/v1/environment-document/?page_id=x>; rel=\"next\"",
+        );
         let next = parse_next_link(&headers, "https://edge.api.flagsmith.com/api/v1").unwrap();
         assert_eq!(
-            next,
-            "https://example.test/api/v1/environment-document/?page_id=x"
+            next.unwrap(),
+            "https://edge.api.flagsmith.com/api/v1/environment-document/?page_id=x"
         );
+    }
+
+    #[test]
+    fn parse_next_link_rejects_cross_origin() {
+        let headers =
+            link("<https://example.test/api/v1/environment-document/?page_id=x>; rel=\"next\"");
+        assert!(parse_next_link(&headers, "https://edge.api.flagsmith.com/api/v1").is_err());
     }
 
     #[test]
     fn parse_next_link_picks_next_among_multiple_rels() {
         let headers = link("</api/v1/page/prev>; rel=\"prev\", </api/v1/page/next>; rel=\"next\"");
         let next = parse_next_link(&headers, "https://edge.api.flagsmith.com/api/v1").unwrap();
-        assert_eq!(next, "https://edge.api.flagsmith.com/api/v1/page/next");
+        assert_eq!(
+            next.unwrap(),
+            "https://edge.api.flagsmith.com/api/v1/page/next"
+        );
     }
 
     #[test]
     fn parse_next_link_returns_none_when_only_other_rels() {
         let headers = link("</prev>; rel=\"prev\", </self>; rel=\"self\"");
-        assert!(parse_next_link(&headers, "https://edge.api.flagsmith.com/api/v1").is_none());
+        assert!(
+            parse_next_link(&headers, "https://edge.api.flagsmith.com/api/v1")
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
     fn parse_next_link_handles_unquoted_rel() {
         let headers = link("</api/v1/page/next>; rel=next");
         let next = parse_next_link(&headers, "https://edge.api.flagsmith.com/api/v1").unwrap();
-        assert_eq!(next, "https://edge.api.flagsmith.com/api/v1/page/next");
+        assert_eq!(
+            next.unwrap(),
+            "https://edge.api.flagsmith.com/api/v1/page/next"
+        );
     }
 
     #[test]

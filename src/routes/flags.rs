@@ -1,12 +1,13 @@
 use crate::error::Result;
 use crate::routes::extractors::extract_environment_key;
-use crate::state::AppState;
+use crate::services::EnvironmentService;
 use axum::{
     Json,
     extract::{Query, State},
     http::HeaderMap,
 };
 use serde::Deserialize;
+use std::sync::Arc;
 
 #[derive(Deserialize)]
 pub struct FlagsQuery {
@@ -14,7 +15,7 @@ pub struct FlagsQuery {
 }
 
 pub async fn get_flags(
-    State(service): State<AppState>,
+    State(service): State<Arc<EnvironmentService>>,
     headers: HeaderMap,
     Query(query): Query<FlagsQuery>,
 ) -> Result<Json<serde_json::Value>> {

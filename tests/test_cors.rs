@@ -17,8 +17,9 @@ async fn server_allowing(allow_origins: &[&str]) -> TestServer {
         allow_origins: allow_origins.iter().map(|o| o.to_string()).collect(),
         ..AppSettings::new()
     };
-    let (app, service) = create_router(settings);
-    service
+    let (app, state) = create_router(settings);
+    state
+        .environments
         .cache
         .put_environment(&environment_1_api_key(), environment_1())
         .await;

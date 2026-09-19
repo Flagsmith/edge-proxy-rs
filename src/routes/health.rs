@@ -1,7 +1,8 @@
-use crate::state::AppState;
+use crate::services::EnvironmentService;
 use axum::{Json, extract::State, http::StatusCode, response::IntoResponse};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HealthCheckResponse {
@@ -28,7 +29,7 @@ impl HealthCheckResponse {
     }
 }
 
-pub async fn health_check(State(service): State<AppState>) -> impl IntoResponse {
+pub async fn health_check(State(service): State<Arc<EnvironmentService>>) -> impl IntoResponse {
     let last_updated = service.last_updated_at.read().await;
 
     match *last_updated {
