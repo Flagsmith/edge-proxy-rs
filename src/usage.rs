@@ -20,12 +20,6 @@ pub struct UsageRow {
     pub count: u64,
 }
 
-/// Requests served since the last flush, aggregated per environment and
-/// resource. Keyed by resolved client keys only, so the map is bounded by
-/// the served environment set.
-///
-/// Uses `parking_lot::Mutex`, not tokio's: every operation writes, and
-/// guards are held only for a map operation, never across an await.
 #[derive(Default)]
 pub struct UsageCounts {
     count_by_environment_and_resource: Mutex<HashMap<(String, Resource), u64>>,
