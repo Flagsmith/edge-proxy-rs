@@ -432,9 +432,7 @@ impl EnvironmentService {
         }
     }
 
-    /// The usage endpoint's batch cap — MAX_USAGE_ROWS in the
-    /// edge_control_plane app. Flushes are chunked to it so a large
-    /// environment set can never be rejected outright.
+    /// Mirrors MAX_USAGE_ROWS on the usage endpoint.
     const MAX_ROWS_PER_FLUSH: usize = 1000;
 
     /// Returns false when any batch was not accepted.

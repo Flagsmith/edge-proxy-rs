@@ -26,6 +26,7 @@ validator = { version = "0.20", features = ["derive"] }
 flagsmith-flag-engine = "0.6"
 
 [dev-dependencies]
+criterion = "0.5"
 axum-test = "18"
 mockall = "0.14"
 tokio-test = "0.4"
@@ -37,3 +38,7 @@ opt-level = 3
 lto = true
 codegen-units = 1
 strip = true
+
+[[bench]]
+name = "usage"
+harness = false
