@@ -25,7 +25,8 @@ pub fn layer(allow_origins: &[String]) -> CorsLayer {
         .max_age(Duration::from_secs(600))
 }
 
-// Each tower-http layer appends its own `Vary` line; fold them into one.
+// Some caches (e.g. Varnish) only look at the first `Vary` header. Each
+// tower-http layer appends its own `Vary` line, so fold them into one.
 pub async fn merge_vary(mut response: Response) -> Response {
     let headers = response.headers_mut();
     if headers.get_all(VARY).iter().count() < 2 {
