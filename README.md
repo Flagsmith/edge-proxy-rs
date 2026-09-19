@@ -98,6 +98,7 @@ Edge Proxy expects to load configuration from `./config.json`.
   "api_url": "https://edge.api.flagsmith.com/api/v1",
   "api_poll_frequency_seconds": 60,
   "api_poll_timeout_seconds": 5,
+  "allow_origins": ["*"],
   "server": {
     "host": "0.0.0.0",
     "port": 8000

@@ -1,3 +1,4 @@
+pub mod cors;
 pub mod environment_document;
 pub mod extractors;
 pub mod flags;
@@ -8,15 +9,14 @@ use crate::config::AppSettings;
 use crate::services::EnvironmentService;
 use axum::{
     Router,
+    middleware::map_response,
     routing::{get, post},
 };
 use std::sync::Arc;
-use tower_http::{
-    compression::CompressionLayer, cors::CorsLayer, normalize_path::NormalizePath,
-    trace::TraceLayer,
-};
+use tower_http::{compression::CompressionLayer, normalize_path::NormalizePath, trace::TraceLayer};
 
 pub fn create_router(settings: AppSettings) -> (Router, Arc<EnvironmentService>) {
+    let cors = cors::layer(&settings.allow_origins);
     let environment_service = Arc::new(EnvironmentService::new(settings));
 
     let router = Router::new()
@@ -37,7 +37,8 @@ pub fn create_router(settings: AppSettings) -> (Router, Arc<EnvironmentService>)
         )
         // Middleware layers
         .layer(CompressionLayer::new())
-        .layer(CorsLayer::permissive())
+        .layer(cors)
+        .layer(map_response(cors::merge_vary))
         .layer(TraceLayer::new_for_http())
         .with_state(environment_service.clone());
 
