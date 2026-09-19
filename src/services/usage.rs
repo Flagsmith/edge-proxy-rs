@@ -14,7 +14,7 @@ enum Outcome {
 
 pub struct UsageProcessor {
     counts: UsageCounts,
-    pending: Mutex<Vec<UsageBatch>>,
+    pending_batches: Mutex<Vec<UsageBatch>>,
     client: Client,
     api_url: String,
     proxy_key: Option<String>,
@@ -32,7 +32,7 @@ impl UsageProcessor {
             .expect("Failed to create HTTP client");
         Self {
             counts: UsageCounts::default(),
-            pending: Mutex::default(),
+            pending_batches: Mutex::default(),
             client,
             api_url: settings.api_url.clone(),
             proxy_key: settings.proxy_key.clone(),
@@ -53,7 +53,7 @@ impl UsageProcessor {
             return true;
         };
 
-        let mut batches = std::mem::take(&mut *self.pending.lock());
+        let mut batches = std::mem::take(&mut *self.pending_batches.lock());
         if batches.is_empty() {
             let mut rows = self.counts.drain();
             while !rows.is_empty() {
@@ -68,7 +68,7 @@ impl UsageProcessor {
                 Outcome::Accepted => {}
                 Outcome::Rejected => all_success = false,
                 Outcome::Failed => {
-                    self.pending.lock().push(batch);
+                    self.pending_batches.lock().push(batch);
                     all_success = false;
                 }
             }
