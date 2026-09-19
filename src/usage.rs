@@ -3,7 +3,6 @@ use std::collections::HashMap;
 use parking_lot::Mutex;
 use serde::Serialize;
 
-/// An SDK endpoint as the usage endpoint names it.
 #[derive(Serialize, Clone, Copy, PartialEq, Eq, Hash, Debug)]
 #[serde(rename_all = "kebab-case")]
 pub enum Resource {
