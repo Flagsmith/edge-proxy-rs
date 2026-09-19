@@ -264,12 +264,12 @@ async fn test_failed_flush_retries_the_same_batch_before_new_counts() {
     let service = EnvironmentService::new(config.clone());
     let usage = UsageProcessor::new(&config);
     service.refresh_environment_caches().await;
-    usage.record(CLIENT_KEY, Resource::Flags);
+    usage.track(CLIENT_KEY, Resource::Flags);
 
     // When the first flush fails, another request is served, and two
     // more flushes run
     assert!(!usage.flush().await);
-    usage.record(CLIENT_KEY, Resource::Flags);
+    usage.track(CLIENT_KEY, Resource::Flags);
     assert!(usage.flush().await);
     assert!(usage.flush().await);
 
@@ -304,7 +304,7 @@ async fn test_flush_without_proxy_key_is_inert() {
     let service = EnvironmentService::new(config.clone());
     let usage = UsageProcessor::new(&config);
     service.refresh_environment_caches().await;
-    usage.record(CLIENT_KEY, Resource::Flags);
+    usage.track(CLIENT_KEY, Resource::Flags);
 
     // When / Then: flushing succeeds without reporting anything
     assert!(usage.flush().await);
@@ -322,7 +322,7 @@ async fn test_rejected_flush_drops_the_batch_instead_of_retrying_it() {
     let service = EnvironmentService::new(config.clone());
     let usage = UsageProcessor::new(&config);
     service.refresh_environment_caches().await;
-    usage.record(CLIENT_KEY, Resource::Flags);
+    usage.track(CLIENT_KEY, Resource::Flags);
 
     // When the flush is rejected
     assert!(!usage.flush().await);
@@ -364,7 +364,7 @@ async fn test_flush_chunks_batches_to_the_server_cap() {
     let usage = UsageProcessor::new(&config);
     service.refresh_environment_caches().await;
     for n in 0..1001 {
-        usage.record(&format!("client_{n}"), Resource::Flags);
+        usage.track(&format!("client_{n}"), Resource::Flags);
     }
 
     // When
@@ -401,8 +401,8 @@ async fn test_static_environment_with_proxy_key_is_billed_like_a_discovered_one(
     service.refresh_environment_caches().await;
 
     // When both environments serve a request, and usage is flushed
-    usage.record("static_client", Resource::Flags);
-    usage.record(CLIENT_KEY, Resource::Flags);
+    usage.track("static_client", Resource::Flags);
+    usage.track(CLIENT_KEY, Resource::Flags);
     assert!(usage.flush().await);
 
     // Then every document fetch is marked and both environments are reported

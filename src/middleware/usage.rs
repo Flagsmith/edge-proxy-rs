@@ -24,7 +24,7 @@ pub async fn track_usage(State(state): State<AppState>, request: Request, next: 
     }
     if let (Some(resource), Some(environment_key)) = (resource, environment_key) {
         if let Some(keys) = state.environments.resolve(&environment_key) {
-            state.usage.record(&keys.client_key, resource);
+            state.usage.track(&keys.client_key, resource);
         }
     }
     response

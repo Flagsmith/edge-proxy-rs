@@ -40,7 +40,7 @@ impl UsageProcessor {
         }
     }
 
-    pub fn record(&self, client_key: &str, resource: Resource) {
+    pub fn track(&self, client_key: &str, resource: Resource) {
         if self.proxy_key.is_none() {
             return;
         }
