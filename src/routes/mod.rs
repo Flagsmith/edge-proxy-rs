@@ -1,12 +1,11 @@
-pub mod cors;
 pub mod environment_document;
 pub mod extractors;
 pub mod flags;
 pub mod health;
 pub mod identities;
-pub mod usage;
 
 use crate::config::AppSettings;
+use crate::middleware::{cors, usage_tracking};
 use crate::services::EnvironmentService;
 use axum::{
     Router,
@@ -16,9 +15,9 @@ use axum::{
 use std::sync::Arc;
 use tower_http::{compression::CompressionLayer, normalize_path::NormalizePath, trace::TraceLayer};
 
-const FLAGS_PATH: &str = "/api/v1/flags";
-const IDENTITIES_PATH: &str = "/api/v1/identities";
-const ENVIRONMENT_DOCUMENT_PATH: &str = "/api/v1/environment-document";
+pub(crate) const FLAGS_PATH: &str = "/api/v1/flags";
+pub(crate) const IDENTITIES_PATH: &str = "/api/v1/identities";
+pub(crate) const ENVIRONMENT_DOCUMENT_PATH: &str = "/api/v1/environment-document";
 
 pub fn create_router(settings: AppSettings) -> (Router, Arc<EnvironmentService>) {
     let cors = cors::layer(&settings.allow_origins);
@@ -43,7 +42,7 @@ pub fn create_router(settings: AppSettings) -> (Router, Arc<EnvironmentService>)
         // Middleware layers
         .layer(from_fn_with_state(
             environment_service.clone(),
-            usage::track_usage,
+            usage_tracking::track_usage,
         ))
         .layer(CompressionLayer::new())
         .layer(cors)
