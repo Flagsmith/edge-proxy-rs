@@ -231,8 +231,8 @@ impl EnvironmentService {
         environment_key: &str,
         feature_name: Option<&str>,
     ) -> Result<Vec<APIFeatureState>> {
-        // TODO: a server-side key 503s here. Contexts are cached under the
-        // client key but looked up by the presented key; map it like Python.
+        // TODO: serve server-side keys here, see
+        // https://github.com/Flagsmith/edge-proxy-rs/issues/24
         self.resolve_key(environment_key)?;
 
         let context = self

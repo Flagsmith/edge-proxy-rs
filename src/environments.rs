@@ -39,10 +39,6 @@ impl EnvironmentKeys {
 }
 
 /// The runtime-mutable set of environments the proxy serves.
-///
-/// Uses `parking_lot::RwLock`, not tokio's: guards are held only for a map
-/// operation, never across an await, and lookups stay callable from
-/// synchronous code.
 #[derive(Default)]
 pub struct EnvironmentIndex {
     /// One entry per key an environment owns, client and server alike, all
