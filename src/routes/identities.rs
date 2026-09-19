@@ -1,13 +1,14 @@
 use crate::error::Result;
 use crate::models::{IdentityResponse, IdentityWithTraits};
 use crate::routes::extractors::extract_environment_key;
-use crate::state::AppState;
+use crate::services::EnvironmentService;
 use axum::{
     Json,
     extract::{Query, State},
     http::HeaderMap,
 };
 use serde::Deserialize;
+use std::sync::Arc;
 
 #[derive(Deserialize)]
 pub struct IdentitiesQuery {
@@ -15,7 +16,7 @@ pub struct IdentitiesQuery {
 }
 
 pub async fn get_identities(
-    State(service): State<AppState>,
+    State(service): State<Arc<EnvironmentService>>,
     headers: HeaderMap,
     Query(query): Query<IdentitiesQuery>,
 ) -> Result<Json<IdentityResponse>> {
@@ -30,7 +31,7 @@ pub async fn get_identities(
 }
 
 pub async fn post_identities(
-    State(service): State<AppState>,
+    State(service): State<Arc<EnvironmentService>>,
     headers: HeaderMap,
     Json(identity): Json<IdentityWithTraits>,
 ) -> Result<Json<IdentityResponse>> {

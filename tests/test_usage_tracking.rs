@@ -2,7 +2,7 @@ use axum::http::StatusCode;
 use axum_test::TestServer;
 use edge_proxy::config::settings::{AppSettings, EnvironmentKeyPair};
 use edge_proxy::routes::create_router;
-use edge_proxy::services::EnvironmentService;
+use edge_proxy::services::{EnvironmentService, UsageProcessor};
 use edge_proxy::usage::Resource;
 use serde_json::{Value, json};
 use wiremock::matchers::{header, method, path};
@@ -126,8 +126,8 @@ async fn test_served_requests_flush_aggregated_usage() {
     mount_config(&mock_server).await;
     mount_document(&mock_server).await;
     mount_usage(&mock_server, 204, None).await;
-    let (app, service) = create_router(settings(&mock_server.uri(), Some(PROXY_KEY), vec![]));
-    service.refresh_environment_caches().await;
+    let (app, state) = create_router(settings(&mock_server.uri(), Some(PROXY_KEY), vec![]));
+    state.environments.refresh_environment_caches().await;
     let server = TestServer::new(app).unwrap();
 
     // When SDK traffic arrives under both keys, then usage is flushed
@@ -158,7 +158,7 @@ async fn test_served_requests_flush_aggregated_usage() {
         .add_header("X-Environment-Key", SERVER_KEY)
         .await
         .assert_status_ok();
-    let flushed = service.flush_usage().await;
+    let flushed = state.usage.flush().await;
 
     // Then one POST reports everything, keyed by the client key even for
     // requests that presented the server key, under an idempotency key
@@ -182,8 +182,8 @@ async fn test_unresolved_keys_are_never_counted() {
     let mock_server = MockServer::start().await;
     mount_config(&mock_server).await;
     mount_document(&mock_server).await;
-    let (app, service) = create_router(settings(&mock_server.uri(), Some(PROXY_KEY), vec![]));
-    service.refresh_environment_caches().await;
+    let (app, state) = create_router(settings(&mock_server.uri(), Some(PROXY_KEY), vec![]));
+    state.environments.refresh_environment_caches().await;
     let server = TestServer::new(app).unwrap();
 
     // When requests present an unknown key or none at all
@@ -198,7 +198,7 @@ async fn test_unresolved_keys_are_never_counted() {
         .assert_status_unauthorized();
 
     // Then there is nothing to flush and no request is made
-    assert!(service.flush_usage().await);
+    assert!(state.usage.flush().await);
     assert!(requests_to(&mock_server, "/proxy/usage/").await.is_empty());
 }
 
@@ -230,8 +230,8 @@ async fn test_failed_requests_are_not_counted() {
         .mount(&mock_server)
         .await;
     mount_document(&mock_server).await;
-    let (app, service) = create_router(settings(&mock_server.uri(), Some(PROXY_KEY), vec![]));
-    service.refresh_environment_caches().await;
+    let (app, state) = create_router(settings(&mock_server.uri(), Some(PROXY_KEY), vec![]));
+    state.environments.refresh_environment_caches().await;
     let server = TestServer::new(app).unwrap();
 
     // When requests fail after their key resolved
@@ -248,7 +248,7 @@ async fn test_failed_requests_are_not_counted() {
         .assert_status(StatusCode::SERVICE_UNAVAILABLE);
 
     // Then nothing is reported
-    assert!(service.flush_usage().await);
+    assert!(state.usage.flush().await);
     assert!(requests_to(&mock_server, "/proxy/usage/").await.is_empty());
 }
 
@@ -260,16 +260,18 @@ async fn test_failed_flush_retries_the_same_batch_before_new_counts() {
     mount_document(&mock_server).await;
     mount_usage(&mock_server, 500, Some(1)).await;
     mount_usage(&mock_server, 204, None).await;
-    let service = EnvironmentService::new(settings(&mock_server.uri(), Some(PROXY_KEY), vec![]));
+    let config = settings(&mock_server.uri(), Some(PROXY_KEY), vec![]);
+    let service = EnvironmentService::new(config.clone());
+    let usage = UsageProcessor::new(&config);
     service.refresh_environment_caches().await;
-    service.track_usage(CLIENT_KEY, Resource::Flags);
+    usage.record(CLIENT_KEY, Resource::Flags);
 
     // When the first flush fails, another request is served, and two
     // more flushes run
-    assert!(!service.flush_usage().await);
-    service.track_usage(CLIENT_KEY, Resource::Flags);
-    assert!(service.flush_usage().await);
-    assert!(service.flush_usage().await);
+    assert!(!usage.flush().await);
+    usage.record(CLIENT_KEY, Resource::Flags);
+    assert!(usage.flush().await);
+    assert!(usage.flush().await);
 
     // Then the failed batch is resent unchanged under its original key,
     // and the count served meanwhile follows as its own batch
@@ -291,19 +293,21 @@ async fn test_flush_without_proxy_key_is_inert() {
     // Given a statically configured proxy with no proxy key
     let mock_server = MockServer::start().await;
     mount_document(&mock_server).await;
-    let service = EnvironmentService::new(settings(
+    let config = settings(
         &mock_server.uri(),
         None,
         vec![EnvironmentKeyPair {
             client_side_key: CLIENT_KEY.to_string(),
             server_side_key: SERVER_KEY.to_string(),
         }],
-    ));
+    );
+    let service = EnvironmentService::new(config.clone());
+    let usage = UsageProcessor::new(&config);
     service.refresh_environment_caches().await;
-    service.track_usage(CLIENT_KEY, Resource::Flags);
+    usage.record(CLIENT_KEY, Resource::Flags);
 
     // When / Then: flushing succeeds without reporting anything
-    assert!(service.flush_usage().await);
+    assert!(usage.flush().await);
     assert!(requests_to(&mock_server, "/proxy/usage/").await.is_empty());
 }
 
@@ -314,16 +318,18 @@ async fn test_rejected_flush_drops_the_batch_instead_of_retrying_it() {
     mount_config(&mock_server).await;
     mount_document(&mock_server).await;
     mount_usage(&mock_server, 400, None).await;
-    let service = EnvironmentService::new(settings(&mock_server.uri(), Some(PROXY_KEY), vec![]));
+    let config = settings(&mock_server.uri(), Some(PROXY_KEY), vec![]);
+    let service = EnvironmentService::new(config.clone());
+    let usage = UsageProcessor::new(&config);
     service.refresh_environment_caches().await;
-    service.track_usage(CLIENT_KEY, Resource::Flags);
+    usage.record(CLIENT_KEY, Resource::Flags);
 
     // When the flush is rejected
-    assert!(!service.flush_usage().await);
+    assert!(!usage.flush().await);
 
     // Then the rows are dropped, not resent forever: the next flush has
     // nothing to send
-    assert!(service.flush_usage().await);
+    assert!(usage.flush().await);
     assert_eq!(requests_to(&mock_server, "/proxy/usage/").await.len(), 1);
 }
 
@@ -353,14 +359,16 @@ async fn test_flush_chunks_batches_to_the_server_cap() {
         .await;
     mount_document(&mock_server).await;
     mount_usage(&mock_server, 204, None).await;
-    let service = EnvironmentService::new(settings(&mock_server.uri(), Some(PROXY_KEY), vec![]));
+    let config = settings(&mock_server.uri(), Some(PROXY_KEY), vec![]);
+    let service = EnvironmentService::new(config.clone());
+    let usage = UsageProcessor::new(&config);
     service.refresh_environment_caches().await;
     for n in 0..1001 {
-        service.track_usage(&format!("client_{n}"), Resource::Flags);
+        usage.record(&format!("client_{n}"), Resource::Flags);
     }
 
     // When
-    assert!(service.flush_usage().await);
+    assert!(usage.flush().await);
 
     // Then the rows arrive split across two accepted requests, each its
     // own batch
@@ -380,20 +388,22 @@ async fn test_static_environment_with_proxy_key_is_billed_like_a_discovered_one(
     mount_config(&mock_server).await;
     mount_document(&mock_server).await;
     mount_usage(&mock_server, 204, None).await;
-    let service = EnvironmentService::new(settings(
+    let config = settings(
         &mock_server.uri(),
         Some(PROXY_KEY),
         vec![EnvironmentKeyPair {
             client_side_key: "static_client".to_string(),
             server_side_key: "ser.static_key".to_string(),
         }],
-    ));
+    );
+    let service = EnvironmentService::new(config.clone());
+    let usage = UsageProcessor::new(&config);
     service.refresh_environment_caches().await;
 
     // When both environments serve a request, and usage is flushed
-    service.track_usage("static_client", Resource::Flags);
-    service.track_usage(CLIENT_KEY, Resource::Flags);
-    assert!(service.flush_usage().await);
+    usage.record("static_client", Resource::Flags);
+    usage.record(CLIENT_KEY, Resource::Flags);
+    assert!(usage.flush().await);
 
     // Then every document fetch is marked and both environments are reported
     let fetches = requests_to(&mock_server, "/environment-document/").await;

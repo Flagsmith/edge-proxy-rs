@@ -30,23 +30,23 @@ async fn main() -> anyhow::Result<()> {
         );
     }
 
-    let (app, environment_service) = create_router(settings.clone());
+    let (app, state) = create_router(settings.clone());
 
     // Refreshes must never overlap: a delayed older poll finishing after a
     // newer one could restore removed environments or rotated keys. The
     // poll loop is serial, so it just has to start after the initial
     // refresh completes.
     info!("Loading initial environment data...");
-    environment_service.refresh_environment_caches().await;
+    state.environments.refresh_environment_caches().await;
 
-    let polling_service = environment_service.clone();
+    let polling_service = state.environments.clone();
     tokio::spawn(async move {
         polling_service.poll_environments().await;
     });
 
-    let usage_service = environment_service.clone();
+    let usage = state.usage.clone();
     tokio::spawn(async move {
-        usage_service.flush_usage_periodically().await;
+        usage.flush_periodically().await;
     });
 
     let addr = SocketAddr::from((

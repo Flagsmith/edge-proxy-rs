@@ -6,12 +6,10 @@ use crate::models::{
     APIFeatureState, IdentityResponse, IdentityWithTraits, ProxyConfigEnvironment,
 };
 use crate::services::feature_utils::filter_out_server_key_only_flag_results;
-use crate::usage::{Resource, UsageBatch, UsageCounts};
 use chrono::{DateTime, Utc};
 use flagsmith_flag_engine::engine::get_evaluation_result;
 use flagsmith_flag_engine::engine_eval::{FlagResult, add_identity_to_context};
 use flagsmith_flag_engine::identities::Trait as FlagsmithTrait;
-use parking_lot::Mutex;
 use reqwest::header::HeaderMap;
 use reqwest::{Client, Url};
 use std::sync::Arc;
@@ -25,14 +23,6 @@ pub struct EnvironmentService {
     pub settings: AppSettings,
     pub last_updated_at: Arc<RwLock<Option<DateTime<Utc>>>>,
     environments: EnvironmentIndex,
-    usage: UsageCounts,
-    pending_usage: Mutex<Vec<UsageBatch>>,
-}
-
-enum UsageOutcome {
-    Accepted,
-    Rejected,
-    Failed,
 }
 
 impl EnvironmentService {
@@ -51,8 +41,6 @@ impl EnvironmentService {
             settings,
             last_updated_at: Arc::new(RwLock::new(None)),
             environments,
-            usage: UsageCounts::default(),
-            pending_usage: Mutex::default(),
         }
     }
 
@@ -165,20 +153,14 @@ impl EnvironmentService {
         Ok(response.json().await?)
     }
 
+    pub fn resolve(&self, environment_key: &str) -> Option<Arc<EnvironmentKeys>> {
+        self.environments.resolve(environment_key)
+    }
+
     fn resolve_key(&self, environment_key: &str) -> Result<Arc<EnvironmentKeys>> {
         self.environments
             .resolve(environment_key)
             .ok_or_else(|| EdgeProxyError::FlagsmithUnknownKey(environment_key.to_string()))
-    }
-
-    pub fn track_usage(&self, environment_key: &str, resource: Resource) {
-        if self.settings.proxy_key.is_none() {
-            return;
-        }
-        let Some(keys) = self.environments.resolve(environment_key) else {
-            return;
-        };
-        self.usage.increment(&keys.client_key, resource);
     }
 
     async fn fetch_environment(&self, keys: &EnvironmentKeys) -> Result<serde_json::Value> {
@@ -422,90 +404,6 @@ impl EnvironmentService {
             interval.tick().await;
             debug!("Polling environments...");
             self.refresh_environment_caches().await;
-        }
-    }
-
-    /// Mirrors MAX_USAGE_ROWS on the usage endpoint.
-    const MAX_ROWS_PER_FLUSH: usize = 1000;
-
-    /// Returns false when any batch was not accepted.
-    pub async fn flush_usage(&self) -> bool {
-        let Some(proxy_key) = &self.settings.proxy_key else {
-            return true;
-        };
-
-        let mut batches = std::mem::take(&mut *self.pending_usage.lock());
-        if batches.is_empty() {
-            let mut rows = self.usage.drain();
-            while !rows.is_empty() {
-                let chunk = rows.drain(..rows.len().min(Self::MAX_ROWS_PER_FLUSH));
-                batches.push(UsageBatch::new(chunk.collect()));
-            }
-        }
-
-        let mut all_success = true;
-        for batch in batches {
-            match self.post_usage(proxy_key, &batch).await {
-                UsageOutcome::Accepted => {}
-                UsageOutcome::Rejected => all_success = false,
-                UsageOutcome::Failed => {
-                    self.pending_usage.lock().push(batch);
-                    all_success = false;
-                }
-            }
-        }
-        all_success
-    }
-
-    async fn post_usage(&self, proxy_key: &str, batch: &UsageBatch) -> UsageOutcome {
-        let url = format!("{}/proxy/usage/", self.settings.api_url);
-        let result = self
-            .client
-            .post(&url)
-            .header("X-Proxy-Key", proxy_key)
-            .header("Idempotency-Key", &batch.id)
-            .json(&batch.rows)
-            .send()
-            .await;
-        match result {
-            Ok(response) if response.status().is_success() => UsageOutcome::Accepted,
-            // Retrying cannot heal a rejection: drop the batch rather than
-            // resend it forever.
-            Ok(response) if response.status().is_client_error() => {
-                error!(
-                    "Usage report rejected with {}: dropping {} rows",
-                    response.status(),
-                    batch.rows.len()
-                );
-                UsageOutcome::Rejected
-            }
-            Ok(response) => {
-                error!("Failed to report usage: {}", response.status());
-                UsageOutcome::Failed
-            }
-            Err(e) => {
-                error!("Failed to report usage: {}", e);
-                UsageOutcome::Failed
-            }
-        }
-    }
-
-    pub async fn flush_usage_periodically(self: Arc<Self>) {
-        if self.settings.proxy_key.is_none() {
-            return;
-        }
-        let mut interval = tokio::time::interval(Duration::from_secs(
-            self.settings.usage_flush_interval_seconds,
-        ));
-        // A flush that overruns the interval (core slow or down) must not be
-        // followed by a burst of catch-up flushes hammering it further.
-        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        // The first tick completes immediately, before anything is counted.
-        interval.tick().await;
-
-        loop {
-            interval.tick().await;
-            self.flush_usage().await;
         }
     }
 }

@@ -6,7 +6,8 @@ pub mod identities;
 
 use crate::config::AppSettings;
 use crate::middleware::{cors, usage};
-use crate::services::EnvironmentService;
+use crate::services::{EnvironmentService, UsageProcessor};
+use crate::state::AppState;
 use axum::{
     Router,
     middleware::{from_fn_with_state, map_response},
@@ -19,9 +20,12 @@ pub(crate) const FLAGS_PATH: &str = "/api/v1/flags";
 pub(crate) const IDENTITIES_PATH: &str = "/api/v1/identities";
 pub(crate) const ENVIRONMENT_DOCUMENT_PATH: &str = "/api/v1/environment-document";
 
-pub fn create_router(settings: AppSettings) -> (Router, Arc<EnvironmentService>) {
+pub fn create_router(settings: AppSettings) -> (Router, AppState) {
     let cors = cors::layer(&settings.allow_origins);
-    let environment_service = Arc::new(EnvironmentService::new(settings));
+    let state = AppState {
+        usage: Arc::new(UsageProcessor::new(&settings)),
+        environments: Arc::new(EnvironmentService::new(settings)),
+    };
 
     let router = Router::new()
         // Health check routes
@@ -40,19 +44,16 @@ pub fn create_router(settings: AppSettings) -> (Router, Arc<EnvironmentService>)
             get(environment_document::get_environment_document),
         )
         // Middleware layers
-        .layer(from_fn_with_state(
-            environment_service.clone(),
-            usage::track_usage,
-        ))
+        .layer(from_fn_with_state(state.clone(), usage::track_usage))
         .layer(CompressionLayer::new())
         .layer(cors)
         .layer(map_response(cors::merge_vary))
         .layer(TraceLayer::new_for_http())
-        .with_state(environment_service.clone());
+        .with_state(state.clone());
 
     // Trailing-slash normalization must wrap the router itself: axum matches
     // routes before `Router::layer` middleware runs
     let app = Router::new().fallback_service(NormalizePath::trim_trailing_slash(router));
 
-    (app, environment_service)
+    (app, state)
 }
