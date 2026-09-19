@@ -30,6 +30,9 @@ impl EnvironmentService {
         let client = Client::builder()
             .timeout(Duration::from_secs(settings.api_poll_timeout_seconds))
             .gzip(true)
+            // reqwest keeps custom headers across redirects; never let one
+            // carry the environment or proxy key to another host.
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .expect("Failed to create HTTP client");
 

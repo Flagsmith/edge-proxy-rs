@@ -471,3 +471,59 @@ async fn test_document_fetch_without_proxy_key_is_unmarked() {
             .all(|request| !request.headers.contains_key("X-Proxy-Key"))
     );
 }
+
+#[tokio::test]
+async fn test_document_fetch_does_not_follow_redirects() {
+    // Given a document endpoint that redirects to another host
+    let mock_server = MockServer::start().await;
+    let other_host = MockServer::start().await;
+    mount_config(&mock_server).await;
+    Mock::given(method("GET"))
+        .and(path("/environment-document/"))
+        .respond_with(ResponseTemplate::new(302).insert_header(
+            "Location",
+            format!("{}/environment-document/", other_host.uri()),
+        ))
+        .mount(&mock_server)
+        .await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(document_body()))
+        .mount(&other_host)
+        .await;
+    let service = EnvironmentService::new(settings(&mock_server.uri(), Some(PROXY_KEY), vec![]));
+
+    // When
+    let refreshed = service.refresh_environment_caches().await;
+
+    // Then the fetch fails and the keys never reach the other host
+    assert!(!refreshed);
+    assert!(other_host.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn test_usage_flush_does_not_follow_redirects() {
+    // Given a usage endpoint that redirects to another host
+    let mock_server = MockServer::start().await;
+    let other_host = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/proxy/usage/"))
+        .respond_with(
+            ResponseTemplate::new(307)
+                .insert_header("Location", format!("{}/proxy/usage/", other_host.uri())),
+        )
+        .mount(&mock_server)
+        .await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(204))
+        .mount(&other_host)
+        .await;
+    let usage = UsageProcessor::new(&settings(&mock_server.uri(), Some(PROXY_KEY), vec![]));
+    usage.track(CLIENT_KEY, Resource::Flags);
+
+    // When
+    let flushed = usage.flush().await;
+
+    // Then the batch is not accepted and the key never reaches the other host
+    assert!(!flushed);
+    assert!(other_host.received_requests().await.unwrap().is_empty());
+}

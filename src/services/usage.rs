@@ -28,6 +28,9 @@ impl UsageProcessor {
     pub fn new(settings: &AppSettings) -> Self {
         let client = Client::builder()
             .timeout(Duration::from_secs(settings.api_poll_timeout_seconds))
+            // reqwest keeps custom headers across redirects; never let one
+            // carry the proxy key to another host.
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .expect("Failed to create HTTP client");
         Self {
