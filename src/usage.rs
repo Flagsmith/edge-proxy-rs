@@ -47,8 +47,6 @@ impl UsageCounts {
     }
 }
 
-/// One `POST /proxy/usage/` body with the idempotency key it is sent
-/// under, so a retry after a lost response is recognised, not recounted.
 pub struct UsageBatch {
     pub id: String,
     pub rows: Vec<UsageRow>,
