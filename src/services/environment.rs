@@ -171,8 +171,6 @@ impl EnvironmentService {
             .ok_or_else(|| EdgeProxyError::FlagsmithUnknownKey(environment_key.to_string()))
     }
 
-    /// Count a served request against its environment. Static environments
-    /// stay on core's own billing, so they are not reported.
     pub fn track_usage(&self, environment_key: &str, resource: Resource) {
         if self.settings.proxy_key.is_none() {
             return;
