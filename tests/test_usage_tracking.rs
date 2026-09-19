@@ -374,8 +374,8 @@ async fn test_flush_chunks_batches_to_the_server_cap() {
 }
 
 #[tokio::test]
-async fn test_static_environment_usage_is_neither_counted_nor_marked() {
-    // Given a proxy serving a static environment alongside a discovered one
+async fn test_static_environment_with_proxy_key_is_billed_like_a_discovered_one() {
+    // Given a proxy key, and a static environment alongside a discovered one
     let mock_server = MockServer::start().await;
     mount_config(&mock_server).await;
     mount_document(&mock_server).await;
@@ -395,28 +395,24 @@ async fn test_static_environment_usage_is_neither_counted_nor_marked() {
     service.track_usage(CLIENT_KEY, Resource::Flags);
     assert!(service.flush_usage().await);
 
-    // Then the static environment keeps its old billing: its document
-    // fetch is not marked as the proxy's own, and it is not reported
+    // Then every document fetch is marked and both environments are reported
     let fetches = requests_to(&mock_server, "/environment-document/").await;
-    let marked: Vec<bool> = fetches
-        .iter()
-        .map(|request| request.headers.contains_key("X-Proxy-Key"))
-        .collect();
-    let static_fetches: Vec<&Request> = fetches
-        .iter()
-        .filter(|request| request.headers["X-Environment-Key"] == "ser.static_key")
-        .collect();
-    assert!(!static_fetches.is_empty());
+    assert!(!fetches.is_empty());
     assert!(
-        static_fetches
+        fetches
             .iter()
-            .all(|request| !request.headers.contains_key("X-Proxy-Key"))
+            .all(|request| request.headers["X-Proxy-Key"] == PROXY_KEY)
     );
-    assert!(marked.contains(&true));
     let posts = requests_to(&mock_server, "/proxy/usage/").await;
+    assert_eq!(posts.len(), 1);
+    let mut rows = usage_rows(&posts[0]);
+    rows.sort_by_key(|row| row["client_side_key"].as_str().unwrap().to_string());
     assert_eq!(
-        usage_rows(&posts[0]),
-        vec![json!({"client_side_key": CLIENT_KEY, "resource": "flags", "count": 1})]
+        rows,
+        vec![
+            json!({"client_side_key": CLIENT_KEY, "resource": "flags", "count": 1}),
+            json!({"client_side_key": "static_client", "resource": "flags", "count": 1}),
+        ]
     );
 }
 
@@ -440,7 +436,7 @@ async fn test_document_fetch_carries_the_proxy_key() {
 }
 
 #[tokio::test]
-async fn test_static_document_fetch_omits_the_proxy_key() {
+async fn test_document_fetch_without_proxy_key_is_unmarked() {
     // Given a statically configured proxy with no proxy key
     let mock_server = MockServer::start().await;
     mount_document(&mock_server).await;

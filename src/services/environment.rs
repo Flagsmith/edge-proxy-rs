@@ -178,9 +178,7 @@ impl EnvironmentService {
         let Some(keys) = self.environments.resolve(environment_key) else {
             return;
         };
-        if !self.environments.is_static(&keys.client_key) {
-            self.usage.increment(&keys.client_key, resource);
-        }
+        self.usage.increment(&keys.client_key, resource);
     }
 
     async fn fetch_environment(&self, keys: &EnvironmentKeys) -> Result<serde_json::Value> {
@@ -234,13 +232,10 @@ impl EnvironmentService {
                 .client
                 .get(&next_url)
                 .header("X-Environment-Key", server_side_key);
-            // Core excludes marked fetches from API usage — the proxy
-            // reports served requests instead. Static environments stay
-            // unmarked and keep their old billing.
-            if !self.environments.is_static(server_side_key) {
-                if let Some(proxy_key) = &self.settings.proxy_key {
-                    request = request.header("X-Proxy-Key", proxy_key);
-                }
+            // Core excludes marked fetches from API usage; the proxy reports
+            // served requests instead.
+            if let Some(proxy_key) = &self.settings.proxy_key {
+                request = request.header("X-Proxy-Key", proxy_key);
             }
             // If-Modified-Since is meaningful only on the first request; the
             // upstream pagination cursor (page_id) drives subsequent fetches.
