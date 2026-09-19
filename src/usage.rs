@@ -73,24 +73,30 @@ mod tests {
         let counts = UsageCounts::default();
 
         // When
-        counts.increment("client", Resource::Flags);
-        counts.increment("client", Resource::Flags);
-        counts.increment("client", Resource::Identities);
+        counts.increment("client_a", Resource::Flags);
+        counts.increment("client_a", Resource::Flags);
+        counts.increment("client_a", Resource::Identities);
+        counts.increment("client_b", Resource::Flags);
 
         // Then
         let mut rows = counts.drain();
-        rows.sort_by_key(|row| format!("{:?}", row.resource));
+        rows.sort_by_key(|row| (row.client_side_key.clone(), format!("{:?}", row.resource)));
         assert_eq!(
             rows,
             vec![
                 UsageRow {
-                    client_side_key: "client".to_string(),
+                    client_side_key: "client_a".to_string(),
                     resource: Resource::Flags,
                     count: 2,
                 },
                 UsageRow {
-                    client_side_key: "client".to_string(),
+                    client_side_key: "client_a".to_string(),
                     resource: Resource::Identities,
+                    count: 1,
+                },
+                UsageRow {
+                    client_side_key: "client_b".to_string(),
+                    resource: Resource::Flags,
                     count: 1,
                 },
             ]
