@@ -441,10 +441,6 @@ impl EnvironmentService {
             return true;
         };
 
-        // A batch that failed may still have been processed, so it is
-        // resent unchanged under the same key and nothing new is drained
-        // until it is through. Meanwhile counts keep aggregating in the
-        // map, which is bounded by the served environment set.
         let mut batches = std::mem::take(&mut *self.pending_usage.lock());
         if batches.is_empty() {
             let mut rows = self.usage.drain();
