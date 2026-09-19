@@ -563,10 +563,6 @@ fn merge_paginated_overrides(base: &mut serde_json::Value, page: serde_json::Val
 
 /// Parse the `Link` response header for the next-page URL (RFC 5988).
 ///
-/// Returns an absolute URL, resolving relative targets against `api_url`.
-/// The `rel=next` pagination target, if any. A target off `api_url`'s
-/// origin is an error: the next request carries the environment and proxy
-/// keys, and a Link header must not be able to send them elsewhere.
 fn parse_next_link(headers: &HeaderMap, api_url: &str) -> Result<Option<String>> {
     let Ok(base) = Url::parse(api_url) else {
         return Ok(None);
