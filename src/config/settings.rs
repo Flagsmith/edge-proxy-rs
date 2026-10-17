@@ -1,7 +1,8 @@
 use crate::error::{EdgeProxyError, Result};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Map, Value};
 use std::fs;
+use std::io;
 use std::path::PathBuf;
 use validator::Validate;
 
@@ -176,9 +177,17 @@ impl AppSettings {
 }
 
 fn read_config_file(path: &PathBuf) -> Result<Value> {
-    let contents = fs::read_to_string(path).map_err(|e| {
-        EdgeProxyError::ConfigurationError(format!("Failed to read config file: {}", e))
-    })?;
+    let contents = match fs::read_to_string(path) {
+        Ok(contents) => contents,
+        // Settings may come entirely from environment variables
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Value::Object(Map::new())),
+        Err(e) => {
+            return Err(EdgeProxyError::ConfigurationError(format!(
+                "Failed to read config file: {}",
+                e
+            )));
+        }
+    };
 
     serde_json::from_str(&contents).map_err(|e| {
         EdgeProxyError::ConfigurationError(format!("Failed to parse config file: {}", e))
@@ -224,6 +233,19 @@ mod tests {
         // Then it behaves like an explicitly empty list and validates
         assert!(settings.environment_key_pairs.is_empty());
         assert!(settings.validate().is_ok());
+    }
+
+    #[test]
+    fn test_missing_config_file_loads_defaults() {
+        // Given
+        let path = PathBuf::from("/nonexistent/config.json");
+
+        // When
+        let settings = AppSettings::from_file(&path).unwrap();
+
+        // Then
+        assert_eq!(settings.api_url, default_api_url());
+        assert!(settings.environment_key_pairs.is_empty());
     }
 
     #[test]
