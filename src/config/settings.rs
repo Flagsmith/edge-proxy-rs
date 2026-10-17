@@ -242,7 +242,8 @@ fn apply_env_overrides(
 
     for (name, raw) in env {
         let key = name.to_lowercase();
-        if defaults.get(&key).is_none() {
+        // Compose passes `VAR: ${VAR}` through as empty when unset on the host
+        if raw.is_empty() || defaults.get(&key).is_none() {
             continue;
         }
         fields.insert(key, Value::String(raw));
@@ -451,6 +452,20 @@ mod tests {
 
         // Then
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_env_empty_values_are_ignored() {
+        // Given
+        let config = serde_json::json!({"proxy_key": "pk.from-file"});
+        let vars = [("PROXY_KEY", ""), ("ENVIRONMENT_KEY_PAIRS", "")];
+
+        // When
+        let settings = settings_from(config, &vars).unwrap();
+
+        // Then
+        assert_eq!(settings.proxy_key.as_deref(), Some("pk.from-file"));
+        assert!(settings.environment_key_pairs.is_empty());
     }
 
     #[test]
