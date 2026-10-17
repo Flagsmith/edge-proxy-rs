@@ -117,6 +117,56 @@ async fn test_get_flags_unknown_key() {
 }
 
 #[tokio::test]
+async fn test_get_flags_server_side_key_includes_server_key_only_features() {
+    // Given
+    let server = setup_test_server().await;
+
+    // When
+    let response = server
+        .get("/api/v1/flags")
+        .add_header("X-Environment-Key", "ser.test_key")
+        .await;
+
+    // Then
+    response.assert_status_ok();
+    let body: serde_json::Value = response.json();
+    let mut feature_names: Vec<&str> = body
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["feature"]["name"].as_str().unwrap())
+        .collect();
+    feature_names.sort();
+    assert_eq!(feature_names, ["feature_1", "feature_2", "feature_3"]);
+}
+
+#[tokio::test]
+async fn test_post_identities_server_side_key_includes_server_key_only_features() {
+    // Given
+    let server = setup_test_server().await;
+    let identity_data = json!({"identifier": "test_identity", "traits": []});
+
+    // When
+    let response = server
+        .post("/api/v1/identities/")
+        .add_header("X-Environment-Key", "ser.test_key")
+        .json(&identity_data)
+        .await;
+
+    // Then
+    response.assert_status_ok();
+    let body: serde_json::Value = response.json();
+    let mut feature_names: Vec<&str> = body["flags"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["feature"]["name"].as_str().unwrap())
+        .collect();
+    feature_names.sort();
+    assert_eq!(feature_names, ["feature_1", "feature_2", "feature_3"]);
+}
+
+#[tokio::test]
 async fn test_post_identity_with_traits() {
     // Given
     let server = setup_test_server().await;
