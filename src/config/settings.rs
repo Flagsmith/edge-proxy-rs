@@ -194,11 +194,72 @@ fn read_config_file(path: &PathBuf) -> Result<Value> {
     })
 }
 
+enum EnvKind {
+    Raw,
+    Json,
+}
+
+// Mirrors the Python proxy: top-level fields only, string fields taken
+// verbatim, everything else JSON-decoded
+const ENV_FIELDS: &[(&str, EnvKind)] = &[
+    ("proxy_key", EnvKind::Raw),
+    ("api_url", EnvKind::Raw),
+    ("environment_key_pairs", EnvKind::Json),
+    ("api_poll_frequency_seconds", EnvKind::Json),
+    ("api_poll_timeout_seconds", EnvKind::Json),
+    ("allow_origins", EnvKind::Json),
+    ("server", EnvKind::Json),
+    ("logging", EnvKind::Json),
+    ("health_check", EnvKind::Json),
+];
+
+fn apply_env_overrides(
+    mut config: Value,
+    env: impl IntoIterator<Item = (String, String)>,
+) -> Result<Value> {
+    let Value::Object(fields) = &mut config else {
+        return Err(EdgeProxyError::ConfigurationError(
+            "Config file must contain a JSON object".to_string(),
+        ));
+    };
+
+    for (name, raw) in env {
+        let key = name.to_lowercase();
+        let Some((field, kind)) = ENV_FIELDS.iter().find(|(field, _)| *field == key) else {
+            continue;
+        };
+        let value = match kind {
+            EnvKind::Raw => Value::String(raw),
+            EnvKind::Json => serde_json::from_str(&raw).map_err(|e| {
+                EdgeProxyError::ConfigurationError(format!(
+                    "Invalid JSON in environment variable {}: {}",
+                    name, e
+                ))
+            })?,
+        };
+        deep_merge(fields.entry(*field).or_insert(Value::Null), value);
+    }
+
+    Ok(config)
+}
+
+fn deep_merge(target: &mut Value, value: Value) {
+    match (target, value) {
+        (Value::Object(target), Value::Object(value)) => {
+            for (key, value) in value {
+                deep_merge(target.entry(key).or_insert(Value::Null), value);
+            }
+        }
+        (target, value) => *target = value,
+    }
+}
+
 pub fn get_settings() -> Result<AppSettings> {
     let config_path = std::env::var("CONFIG_PATH").unwrap_or_else(|_| "./config.json".to_string());
     let path = PathBuf::from(config_path);
 
-    AppSettings::from_file(&path)
+    let config = apply_env_overrides(read_config_file(&path)?, std::env::vars())?;
+    AppSettings::from_value(config)
 }
 
 #[cfg(test)]
@@ -246,6 +307,117 @@ mod tests {
         // Then
         assert_eq!(settings.api_url, default_api_url());
         assert!(settings.environment_key_pairs.is_empty());
+    }
+
+    fn env(vars: &[(&str, &str)]) -> Vec<(String, String)> {
+        vars.iter()
+            .map(|(name, value)| (name.to_string(), value.to_string()))
+            .collect()
+    }
+
+    fn settings_from(config: Value, vars: &[(&str, &str)]) -> Result<AppSettings> {
+        AppSettings::from_value(apply_env_overrides(config, env(vars))?)
+    }
+
+    #[test]
+    fn test_env_only_config_loads_environment_key_pairs() {
+        // Given
+        let vars = [(
+            "ENVIRONMENT_KEY_PAIRS",
+            r#"[{"server_side_key":"ser.abc","client_side_key":"abc"}]"#,
+        )];
+
+        // When
+        let settings = settings_from(serde_json::json!({}), &vars).unwrap();
+
+        // Then
+        assert_eq!(settings.environment_key_pairs.len(), 1);
+        assert_eq!(settings.environment_key_pairs[0].client_side_key, "abc");
+    }
+
+    #[test]
+    fn test_env_takes_precedence_over_config_file() {
+        // Given
+        let config = serde_json::json!({
+            "api_url": "https://file.example.com/api/v1",
+            "api_poll_frequency_seconds": 30,
+        });
+        let vars = [
+            ("API_URL", "https://env.example.com/api/v1"),
+            ("API_POLL_FREQUENCY_SECONDS", "5"),
+        ];
+
+        // When
+        let settings = settings_from(config, &vars).unwrap();
+
+        // Then
+        assert_eq!(settings.api_url, "https://env.example.com/api/v1");
+        assert_eq!(settings.api_poll_frequency_seconds, 5);
+    }
+
+    #[test]
+    fn test_env_raw_field_keeps_numeric_looking_value_as_string() {
+        // Given
+        let vars = [("PROXY_KEY", "123")];
+
+        // When
+        let settings = settings_from(serde_json::json!({}), &vars).unwrap();
+
+        // Then
+        assert_eq!(settings.proxy_key.as_deref(), Some("123"));
+    }
+
+    #[test]
+    fn test_env_names_are_case_insensitive() {
+        // Given
+        let vars = [("api_poll_timeout_seconds", "9")];
+
+        // When
+        let settings = settings_from(serde_json::json!({}), &vars).unwrap();
+
+        // Then
+        assert_eq!(settings.api_poll_timeout_seconds, 9);
+    }
+
+    #[test]
+    fn test_env_partial_object_deep_merges_with_config_file() {
+        // Given
+        let config = serde_json::json!({
+            "logging": {"log_level": "INFO", "log_format": "json"},
+        });
+        let vars = [("LOGGING", r#"{"log_level":"DEBUG"}"#)];
+
+        // When
+        let settings = settings_from(config, &vars).unwrap();
+
+        // Then
+        assert_eq!(settings.logging.log_level, "DEBUG");
+        assert_eq!(settings.logging.log_format, "json");
+    }
+
+    #[test]
+    fn test_env_invalid_json_errors_naming_the_variable() {
+        // Given
+        let vars = [("ENVIRONMENT_KEY_PAIRS", "not json")];
+
+        // When
+        let result = apply_env_overrides(serde_json::json!({}), env(&vars));
+
+        // Then
+        let error = result.unwrap_err().to_string();
+        assert!(error.contains("ENVIRONMENT_KEY_PAIRS"), "{error}");
+    }
+
+    #[test]
+    fn test_env_unrelated_variables_are_ignored() {
+        // Given
+        let vars = [("PATH", "/usr/bin"), ("HOME", "not json")];
+
+        // When
+        let config = apply_env_overrides(serde_json::json!({}), env(&vars)).unwrap();
+
+        // Then
+        assert_eq!(config, serde_json::json!({}));
     }
 
     #[test]
