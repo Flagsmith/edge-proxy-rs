@@ -4,12 +4,13 @@ use axum_test::TestServer;
 use edge_proxy::config::settings::{AppSettings, EnvironmentKeyPair};
 use edge_proxy::routes::create_router;
 use fixtures::*;
+use rstest::rstest;
 use serde_json::json;
 
 async fn setup_test_server() -> TestServer {
     let settings = AppSettings {
         environment_key_pairs: vec![EnvironmentKeyPair {
-            server_side_key: "ser.test_key".to_string(),
+            server_side_key: environment_1_server_key(),
             client_side_key: environment_1_api_key(),
         }],
         api_url: "http://test".to_string(),
@@ -26,22 +27,30 @@ async fn setup_test_server() -> TestServer {
     TestServer::new(app).unwrap()
 }
 
+#[rstest]
+#[case::client_key(environment_1_api_key(), &["feature_1", "feature_2"])]
+#[case::server_key(environment_1_server_key(), &["feature_1", "feature_2", "feature_3"])]
 #[tokio::test]
-async fn test_get_flags() {
+async fn test_get_flags(#[case] environment_key: String, #[case] expected_features: &[&str]) {
     // Given
     let server = setup_test_server().await;
 
     // When
     let response = server
         .get("/api/v1/flags")
-        .add_header("X-Environment-Key", &environment_1_api_key())
+        .add_header("X-Environment-Key", &environment_key)
         .await;
 
     // Then
     response.assert_status_ok();
     let body: serde_json::Value = response.json();
     let flags = body.as_array().unwrap();
-    assert_eq!(flags.len(), 2);
+    let mut feature_names: Vec<&str> = flags
+        .iter()
+        .map(|f| f["feature"]["name"].as_str().unwrap())
+        .collect();
+    feature_names.sort();
+    assert_eq!(feature_names, expected_features);
 
     let feature_1 = flags
         .iter()
@@ -60,15 +69,18 @@ async fn test_get_flags() {
     assert_eq!(feature_2["feature_state_value"], "2.3");
 }
 
+#[rstest]
 #[tokio::test]
-async fn test_get_flags_single_feature() {
+async fn test_get_flags_single_feature(
+    #[values(environment_1_api_key(), environment_1_server_key())] environment_key: String,
+) {
     // Given
     let server = setup_test_server().await;
 
     // When
     let response = server
         .get("/api/v1/flags?feature=feature_1")
-        .add_header("X-Environment-Key", &environment_1_api_key())
+        .add_header("X-Environment-Key", &environment_key)
         .await;
 
     // Then
@@ -99,6 +111,23 @@ async fn test_get_flags_single_feature_server_key_only_returns_404() {
 }
 
 #[tokio::test]
+async fn test_get_flags_single_feature_server_key_only_with_server_key() {
+    // Given
+    let server = setup_test_server().await;
+
+    // When
+    let response = server
+        .get("/api/v1/flags?feature=feature_3")
+        .add_header("X-Environment-Key", &environment_1_server_key())
+        .await;
+
+    // Then
+    response.assert_status_ok();
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["feature"]["name"], "feature_3");
+}
+
+#[tokio::test]
 async fn test_get_flags_unknown_key() {
     // Given
     let server = setup_test_server().await;
@@ -116,58 +145,14 @@ async fn test_get_flags_unknown_key() {
     assert!(body["message"].as_str().unwrap().contains("unknown key"));
 }
 
+#[rstest]
+#[case::client_key(environment_1_api_key(), &["feature_1", "feature_2"])]
+#[case::server_key(environment_1_server_key(), &["feature_1", "feature_2", "feature_3"])]
 #[tokio::test]
-async fn test_get_flags_server_side_key_includes_server_key_only_features() {
-    // Given
-    let server = setup_test_server().await;
-
-    // When
-    let response = server
-        .get("/api/v1/flags")
-        .add_header("X-Environment-Key", "ser.test_key")
-        .await;
-
-    // Then
-    response.assert_status_ok();
-    let body: serde_json::Value = response.json();
-    let mut feature_names: Vec<&str> = body
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|f| f["feature"]["name"].as_str().unwrap())
-        .collect();
-    feature_names.sort();
-    assert_eq!(feature_names, ["feature_1", "feature_2", "feature_3"]);
-}
-
-#[tokio::test]
-async fn test_post_identities_server_side_key_includes_server_key_only_features() {
-    // Given
-    let server = setup_test_server().await;
-    let identity_data = json!({"identifier": "test_identity", "traits": []});
-
-    // When
-    let response = server
-        .post("/api/v1/identities/")
-        .add_header("X-Environment-Key", "ser.test_key")
-        .json(&identity_data)
-        .await;
-
-    // Then
-    response.assert_status_ok();
-    let body: serde_json::Value = response.json();
-    let mut feature_names: Vec<&str> = body["flags"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|f| f["feature"]["name"].as_str().unwrap())
-        .collect();
-    feature_names.sort();
-    assert_eq!(feature_names, ["feature_1", "feature_2", "feature_3"]);
-}
-
-#[tokio::test]
-async fn test_post_identity_with_traits() {
+async fn test_post_identity_with_traits(
+    #[case] environment_key: String,
+    #[case] expected_features: &[&str],
+) {
     // Given
     let server = setup_test_server().await;
     let identity_data = json!({
@@ -180,7 +165,7 @@ async fn test_post_identity_with_traits() {
     // When
     let response = server
         .post("/api/v1/identities/")
-        .add_header("X-Environment-Key", &environment_1_api_key())
+        .add_header("X-Environment-Key", &environment_key)
         .json(&identity_data)
         .await;
 
@@ -189,20 +174,22 @@ async fn test_post_identity_with_traits() {
     let body: serde_json::Value = response.json();
     assert!(body["flags"].is_array());
     let flags = body["flags"].as_array().unwrap();
-    assert_eq!(flags.len(), 2);
     assert_eq!(body["traits"][0]["trait_key"], "email");
     assert_eq!(body["traits"][0]["trait_value"], "test@example.com");
 
-    let feature_names: Vec<&str> = flags
+    let mut feature_names: Vec<&str> = flags
         .iter()
         .map(|f| f["feature"]["name"].as_str().unwrap())
         .collect();
-    assert!(feature_names.contains(&"feature_1"));
-    assert!(feature_names.contains(&"feature_2"));
+    feature_names.sort();
+    assert_eq!(feature_names, expected_features);
 }
 
+#[rstest]
 #[tokio::test]
-async fn test_post_identity_with_override() {
+async fn test_post_identity_with_override(
+    #[values(environment_1_api_key(), environment_1_server_key())] environment_key: String,
+) {
     // Given
     let server = setup_test_server().await;
     let identity_data = json!({
@@ -213,7 +200,7 @@ async fn test_post_identity_with_override() {
     // When
     let response = server
         .post("/api/v1/identities/")
-        .add_header("X-Environment-Key", &environment_1_api_key())
+        .add_header("X-Environment-Key", &environment_key)
         .json(&identity_data)
         .await;
 
@@ -229,15 +216,18 @@ async fn test_post_identity_with_override() {
     assert_eq!(feature_1["enabled"], true);
 }
 
+#[rstest]
 #[tokio::test]
-async fn test_get_identities() {
+async fn test_get_identities(
+    #[values(environment_1_api_key(), environment_1_server_key())] environment_key: String,
+) {
     // Given
     let server = setup_test_server().await;
 
     // When
     let response = server
         .get("/api/v1/identities/?identifier=test_identity")
-        .add_header("X-Environment-Key", &environment_1_api_key())
+        .add_header("X-Environment-Key", &environment_key)
         .await;
 
     // Then
