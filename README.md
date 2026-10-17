@@ -84,7 +84,7 @@ docker run --rm -p 8000:8000 edge-proxy-rs-local
 ## Configuration
 
 Edge Proxy loads configuration from `./config.json` and environment variables. Environment variables take precedence, and
-the config file is optional.
+the config file is optional unless `CONFIG_PATH` is set.
 
 ### Configuration Options
 
@@ -130,12 +130,13 @@ docker run \
 
 Any top-level setting can be set with an environment variable of the same name, case-insensitive. String settings take
 the value as-is; all others take JSON. An environment variable replaces the whole setting, so
-`LOGGING='{"log_level":"DEBUG"}'` resets the other logging settings to their defaults.
+`LOGGING='{"log_level":"DEBUG"}'` resets the other logging settings to their defaults. Empty values are ignored.
 
 ```bash
 docker run \
     -e ENVIRONMENT_KEY_PAIRS='[{"server_side_key":"ser.YOUR_SERVER_KEY","client_side_key":"YOUR_CLIENT_KEY"}]' \
     -e API_POLL_FREQUENCY_SECONDS=30 \
+    -e ALLOW_ORIGINS='["https://app.example.com"]' \
     -p 8000:8000 \
     flagsmith/edge-proxy-rs:latest
 ```
@@ -144,7 +145,7 @@ docker run \
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `CONFIG_PATH` | Path to config file | `./config.json` |
+| `CONFIG_PATH` | Path to config file; must exist when set | `./config.json` |
 | `RUST_LOG` | Log level (`error`, `warn`, `info`, `debug`, `trace`) | `info` |
 | `TOKIO_WORKER_THREADS` | Number of async worker threads | CPU cores |
 
