@@ -177,8 +177,8 @@ impl AppSettings {
 }
 
 fn read_config_file(path: &PathBuf) -> Result<Value> {
-    let contents = match fs::read_to_string(path) {
-        Ok(contents) => contents,
+    let config_str = match fs::read_to_string(path) {
+        Ok(config_str) => config_str,
         // Settings may come entirely from environment variables
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Value::Object(Map::new())),
         Err(e) => {
@@ -189,7 +189,7 @@ fn read_config_file(path: &PathBuf) -> Result<Value> {
         }
     };
 
-    serde_json::from_str(&contents).map_err(|e| {
+    serde_json::from_str(&config_str).map_err(|e| {
         EdgeProxyError::ConfigurationError(format!("Failed to parse config file: {}", e))
     })
 }
