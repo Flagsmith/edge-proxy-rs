@@ -83,7 +83,8 @@ docker run --rm -p 8000:8000 edge-proxy-rs-local
 
 ## Configuration
 
-Edge Proxy expects to load configuration from `./config.json`.
+Edge Proxy loads configuration from `./config.json` and environment variables. Environment variables take precedence, and
+the config file is optional.
 
 ### Configuration Options
 
@@ -122,6 +123,20 @@ Or with Docker:
 docker run \
     -e CONFIG_PATH=/var/foo.json \
     -v ./config.json:/var/foo.json \
+    flagsmith/edge-proxy-rs:latest
+```
+
+### Settings from Environment Variables
+
+Any top-level setting can be set with an environment variable of the same name, case-insensitive. `proxy_key` and
+`api_url` are read as plain strings; all other values are JSON. Objects are merged into the config file's values, so
+`LOGGING='{"log_level":"DEBUG"}'` keeps the file's other logging settings.
+
+```bash
+docker run \
+    -e ENVIRONMENT_KEY_PAIRS='[{"server_side_key":"ser.YOUR_SERVER_KEY","client_side_key":"YOUR_CLIENT_KEY"}]' \
+    -e API_POLL_FREQUENCY_SECONDS=30 \
+    -p 8000:8000 \
     flagsmith/edge-proxy-rs:latest
 ```
 
