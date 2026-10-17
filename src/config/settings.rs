@@ -205,7 +205,6 @@ fn read_config_file(path: &PathBuf) -> Result<Value> {
     })
 }
 
-// Env values arrive as strings, so non-string fields JSON-decode them
 fn json_or_value<'de, D, T>(deserializer: D) -> std::result::Result<T, D::Error>
 where
     D: Deserializer<'de>,
