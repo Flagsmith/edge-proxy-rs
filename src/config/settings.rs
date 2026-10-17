@@ -165,10 +165,6 @@ impl AppSettings {
         Self::default()
     }
 
-    pub fn from_file(path: &PathBuf) -> Result<Self> {
-        Self::from_value(read_config_file(path)?)
-    }
-
     pub fn from_value(value: Value) -> Result<Self> {
         let settings: AppSettings = serde_path_to_error::deserialize(value).map_err(|e| {
             EdgeProxyError::ConfigurationError(format!(
@@ -190,11 +186,25 @@ impl AppSettings {
     }
 }
 
-fn read_config_file(path: &PathBuf) -> Result<Value> {
+fn load_config_file(config_path: Option<String>) -> Result<Value> {
+    let explicit = config_path.is_some();
+    let path = PathBuf::from(config_path.unwrap_or_else(|| "./config.json".to_string()));
+
+    match read_config_file(&path)? {
+        Some(config) => Ok(config),
+        // Settings may come entirely from environment variables
+        None if !explicit => Ok(Value::Object(Map::new())),
+        None => Err(EdgeProxyError::ConfigurationError(format!(
+            "Config file not found: {}",
+            path.display()
+        ))),
+    }
+}
+
+fn read_config_file(path: &PathBuf) -> Result<Option<Value>> {
     let config_str = match fs::read_to_string(path) {
         Ok(config_str) => config_str,
-        // Settings may come entirely from environment variables
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Value::Object(Map::new())),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(e) => {
             return Err(EdgeProxyError::ConfigurationError(format!(
                 "Failed to read config file: {}",
@@ -203,7 +213,7 @@ fn read_config_file(path: &PathBuf) -> Result<Value> {
         }
     };
 
-    serde_json::from_str(&config_str).map_err(|e| {
+    serde_json::from_str(&config_str).map(Some).map_err(|e| {
         EdgeProxyError::ConfigurationError(format!("Failed to parse config file: {}", e))
     })
 }
@@ -242,13 +252,10 @@ fn apply_env_overrides(
 }
 
 pub fn get_settings() -> Result<AppSettings> {
-    let config_path = std::env::var("CONFIG_PATH").unwrap_or_else(|_| "./config.json".to_string());
-    let path = PathBuf::from(config_path);
-
     // vars() panics on non-UTF-8 entries, even ones unrelated to the proxy
     let env = std::env::vars_os()
         .filter_map(|(name, value)| Some((name.into_string().ok()?, value.into_string().ok()?)));
-    let config = apply_env_overrides(read_config_file(&path)?, env)?;
+    let config = apply_env_overrides(load_config_file(std::env::var("CONFIG_PATH").ok())?, env)?;
     AppSettings::from_value(config)
 }
 
@@ -287,16 +294,28 @@ mod tests {
     }
 
     #[test]
-    fn test_missing_config_file_loads_defaults() {
+    fn test_missing_config_file_reads_as_none() {
         // Given
         let path = PathBuf::from("/nonexistent/config.json");
 
         // When
-        let settings = AppSettings::from_file(&path).unwrap();
+        let config = read_config_file(&path).unwrap();
 
         // Then
-        assert_eq!(settings.api_url, default_api_url());
-        assert!(settings.environment_key_pairs.is_empty());
+        assert!(config.is_none());
+    }
+
+    #[test]
+    fn test_missing_explicit_config_path_is_an_error() {
+        // Given
+        let config_path = Some("/nonexistent/config.json".to_string());
+
+        // When
+        let result = load_config_file(config_path);
+
+        // Then
+        let error = result.unwrap_err().to_string();
+        assert!(error.contains("/nonexistent/config.json"), "{error}");
     }
 
     fn env(vars: &[(&str, &str)]) -> Vec<(String, String)> {
