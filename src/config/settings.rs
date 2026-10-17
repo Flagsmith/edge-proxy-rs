@@ -95,7 +95,7 @@ impl Default for HealthCheckSettings {
 #[derive(Debug, Clone, Serialize, Deserialize, Validate)]
 pub struct AppSettings {
     // Optional so the environment set can also come from runtime discovery
-    #[serde(default, deserialize_with = "json_or_value")]
+    #[serde(default, deserialize_with = "json_str_or_native")]
     #[validate(nested)]
     pub environment_key_pairs: Vec<EnvironmentKeyPair>,
     /// Credential for the proxy config endpoint; when set, the served
@@ -107,21 +107,24 @@ pub struct AppSettings {
     pub api_url: String,
     #[serde(
         default = "default_api_poll_frequency",
-        deserialize_with = "json_or_value"
+        deserialize_with = "json_str_or_native"
     )]
     pub api_poll_frequency_seconds: u64,
     #[serde(
         default = "default_api_poll_timeout",
-        deserialize_with = "json_or_value"
+        deserialize_with = "json_str_or_native"
     )]
     pub api_poll_timeout_seconds: u64,
-    #[serde(default = "default_allow_origins", deserialize_with = "json_or_value")]
+    #[serde(
+        default = "default_allow_origins",
+        deserialize_with = "json_str_or_native"
+    )]
     pub allow_origins: Vec<String>,
-    #[serde(default, deserialize_with = "json_or_value")]
+    #[serde(default, deserialize_with = "json_str_or_native")]
     pub server: ServerSettings,
-    #[serde(default, deserialize_with = "json_or_value")]
+    #[serde(default, deserialize_with = "json_str_or_native")]
     pub logging: LoggingSettings,
-    #[serde(default, deserialize_with = "json_or_value")]
+    #[serde(default, deserialize_with = "json_str_or_native")]
     pub health_check: HealthCheckSettings,
 }
 
@@ -205,7 +208,7 @@ fn read_config_file(path: &PathBuf) -> Result<Value> {
     })
 }
 
-fn json_or_value<'de, D, T>(deserializer: D) -> std::result::Result<T, D::Error>
+fn json_str_or_native<'de, D, T>(deserializer: D) -> std::result::Result<T, D::Error>
 where
     D: Deserializer<'de>,
     T: DeserializeOwned,
