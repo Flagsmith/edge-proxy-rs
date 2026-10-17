@@ -194,23 +194,28 @@ fn read_config_file(path: &PathBuf) -> Result<Value> {
     })
 }
 
-enum EnvKind {
-    Raw,
-    Json,
+type ToValue = fn(String) -> serde_json::Result<Value>;
+
+fn string(value: String) -> serde_json::Result<Value> {
+    Ok(Value::String(value))
+}
+
+fn json(value: String) -> serde_json::Result<Value> {
+    serde_json::from_str(&value)
 }
 
 // Mirrors the Python proxy: top-level fields only, string fields taken
 // verbatim, everything else JSON-decoded
-const ENV_FIELDS: &[(&str, EnvKind)] = &[
-    ("proxy_key", EnvKind::Raw),
-    ("api_url", EnvKind::Raw),
-    ("environment_key_pairs", EnvKind::Json),
-    ("api_poll_frequency_seconds", EnvKind::Json),
-    ("api_poll_timeout_seconds", EnvKind::Json),
-    ("allow_origins", EnvKind::Json),
-    ("server", EnvKind::Json),
-    ("logging", EnvKind::Json),
-    ("health_check", EnvKind::Json),
+const ENV_FIELDS: &[(&str, ToValue)] = &[
+    ("proxy_key", string),
+    ("api_url", string),
+    ("environment_key_pairs", json),
+    ("api_poll_frequency_seconds", json),
+    ("api_poll_timeout_seconds", json),
+    ("allow_origins", json),
+    ("server", json),
+    ("logging", json),
+    ("health_check", json),
 ];
 
 fn apply_env_overrides(
@@ -225,18 +230,15 @@ fn apply_env_overrides(
 
     for (name, raw) in env {
         let key = name.to_lowercase();
-        let Some((field, kind)) = ENV_FIELDS.iter().find(|(field, _)| *field == key) else {
+        let Some((field, to_value)) = ENV_FIELDS.iter().find(|(field, _)| *field == key) else {
             continue;
         };
-        let value = match kind {
-            EnvKind::Raw => Value::String(raw),
-            EnvKind::Json => serde_json::from_str(&raw).map_err(|e| {
-                EdgeProxyError::ConfigurationError(format!(
-                    "Invalid JSON in environment variable {}: {}",
-                    name, e
-                ))
-            })?,
-        };
+        let value = to_value(raw).map_err(|e| {
+            EdgeProxyError::ConfigurationError(format!(
+                "Invalid JSON in environment variable {}: {}",
+                name, e
+            ))
+        })?;
         deep_merge(fields.entry(*field).or_insert(Value::Null), value);
     }
 
