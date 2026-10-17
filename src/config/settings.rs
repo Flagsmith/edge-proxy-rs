@@ -1,5 +1,5 @@
 use crate::error::{EdgeProxyError, Result};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, de};
 use serde_json::{Map, Value};
 use std::fs;
 use std::io;
@@ -104,9 +104,15 @@ pub struct AppSettings {
     pub proxy_key: Option<String>,
     #[serde(default = "default_api_url")]
     pub api_url: String,
-    #[serde(default = "default_api_poll_frequency")]
+    #[serde(
+        default = "default_api_poll_frequency",
+        deserialize_with = "number_or_string"
+    )]
     pub api_poll_frequency_seconds: u64,
-    #[serde(default = "default_api_poll_timeout")]
+    #[serde(
+        default = "default_api_poll_timeout",
+        deserialize_with = "number_or_string"
+    )]
     pub api_poll_timeout_seconds: u64,
     #[serde(default = "default_allow_origins")]
     pub allow_origins: Vec<String>,
@@ -194,34 +200,31 @@ fn read_config_file(path: &PathBuf) -> Result<Value> {
     })
 }
 
-type ToValue = fn(String) -> serde_json::Result<Value>;
+// Env values are strings; numeric top-level fields opt in to parsing them
+fn number_or_string<'de, D>(deserializer: D) -> std::result::Result<u64, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum NumberOrString {
+        Number(u64),
+        String(String),
+    }
 
-fn string(value: String) -> serde_json::Result<Value> {
-    Ok(Value::String(value))
+    match NumberOrString::deserialize(deserializer)? {
+        NumberOrString::Number(number) => Ok(number),
+        NumberOrString::String(string) => string.parse().map_err(de::Error::custom),
+    }
 }
-
-fn json(value: String) -> serde_json::Result<Value> {
-    serde_json::from_str(&value)
-}
-
-// Mirrors the Python proxy: top-level fields only, string fields taken
-// verbatim, everything else JSON-decoded
-const ENV_FIELDS: &[(&str, ToValue)] = &[
-    ("proxy_key", string),
-    ("api_url", string),
-    ("environment_key_pairs", json),
-    ("api_poll_frequency_seconds", json),
-    ("api_poll_timeout_seconds", json),
-    ("allow_origins", json),
-    ("server", json),
-    ("logging", json),
-    ("health_check", json),
-];
 
 fn apply_env_overrides(
     mut config: Value,
     env: impl IntoIterator<Item = (String, String)>,
 ) -> Result<Value> {
+    let Value::Object(known_fields) = serde_json::to_value(AppSettings::default())? else {
+        unreachable!("AppSettings serializes to an object");
+    };
     let Value::Object(fields) = &mut config else {
         return Err(EdgeProxyError::ConfigurationError(
             "Config file must contain a JSON object".to_string(),
@@ -230,16 +233,20 @@ fn apply_env_overrides(
 
     for (name, raw) in env {
         let key = name.to_lowercase();
-        let Some((field, to_value)) = ENV_FIELDS.iter().find(|(field, _)| *field == key) else {
+        if !known_fields.contains_key(&key) {
             continue;
+        }
+        let value = if raw.trim_start().starts_with(['[', '{']) {
+            serde_json::from_str(&raw).map_err(|e| {
+                EdgeProxyError::ConfigurationError(format!(
+                    "Invalid JSON in environment variable {}: {}",
+                    name, e
+                ))
+            })?
+        } else {
+            Value::String(raw)
         };
-        let value = to_value(raw).map_err(|e| {
-            EdgeProxyError::ConfigurationError(format!(
-                "Invalid JSON in environment variable {}: {}",
-                name, e
-            ))
-        })?;
-        deep_merge(fields.entry(*field).or_insert(Value::Null), value);
+        deep_merge(fields.entry(key).or_insert(Value::Null), value);
     }
 
     Ok(config)
@@ -400,7 +407,7 @@ mod tests {
     #[test]
     fn test_env_invalid_json_errors_naming_the_variable() {
         // Given
-        let vars = [("ENVIRONMENT_KEY_PAIRS", "not json")];
+        let vars = [("ENVIRONMENT_KEY_PAIRS", "[{oops")];
 
         // When
         let result = apply_env_overrides(serde_json::json!({}), env(&vars));
@@ -408,6 +415,30 @@ mod tests {
         // Then
         let error = result.unwrap_err().to_string();
         assert!(error.contains("ENVIRONMENT_KEY_PAIRS"), "{error}");
+    }
+
+    #[test]
+    fn test_config_file_numbers_still_parse() {
+        // Given
+        let config = serde_json::json!({"api_poll_timeout_seconds": 7});
+
+        // When
+        let settings = settings_from(config, &[]).unwrap();
+
+        // Then
+        assert_eq!(settings.api_poll_timeout_seconds, 7);
+    }
+
+    #[test]
+    fn test_env_non_numeric_value_for_number_field_is_rejected() {
+        // Given
+        let vars = [("API_POLL_FREQUENCY_SECONDS", "soon")];
+
+        // When
+        let result = settings_from(serde_json::json!({}), &vars);
+
+        // Then
+        assert!(result.is_err());
     }
 
     #[test]

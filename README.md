@@ -128,8 +128,8 @@ docker run \
 
 ### Settings from Environment Variables
 
-Any top-level setting can be set with an environment variable of the same name, case-insensitive. `proxy_key` and
-`api_url` are read as plain strings; all other values are JSON. Objects are merged into the config file's values, so
+Any top-level setting can be set with an environment variable of the same name, case-insensitive. Values starting with
+`[` or `{` are parsed as JSON; anything else is used as-is. Objects are merged into the config file's values, so
 `LOGGING='{"log_level":"DEBUG"}'` keeps the file's other logging settings.
 
 ```bash
