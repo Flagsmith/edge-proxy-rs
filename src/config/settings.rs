@@ -81,13 +81,19 @@ impl Default for LoggingSettings {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HealthCheckSettings {
+    #[serde(default = "default_environment_update_grace_period_seconds")]
     pub environment_update_grace_period_seconds: Option<u64>,
+}
+
+fn default_environment_update_grace_period_seconds() -> Option<u64> {
+    Some(120)
 }
 
 impl Default for HealthCheckSettings {
     fn default() -> Self {
         Self {
-            environment_update_grace_period_seconds: Some(120),
+            environment_update_grace_period_seconds:
+                default_environment_update_grace_period_seconds(),
         }
     }
 }
@@ -432,6 +438,43 @@ mod tests {
 
         // Then
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_health_check_without_grace_period_uses_default() {
+        // Given
+        let vars = [("HEALTH_CHECK", "{}")];
+
+        // When
+        let settings = settings_from(serde_json::json!({}), &vars).unwrap();
+
+        // Then
+        assert_eq!(
+            settings
+                .health_check
+                .environment_update_grace_period_seconds,
+            Some(120)
+        );
+    }
+
+    #[test]
+    fn test_health_check_with_null_grace_period_disables_staleness_check() {
+        // Given
+        let vars = [(
+            "HEALTH_CHECK",
+            r#"{"environment_update_grace_period_seconds":null}"#,
+        )];
+
+        // When
+        let settings = settings_from(serde_json::json!({}), &vars).unwrap();
+
+        // Then
+        assert_eq!(
+            settings
+                .health_check
+                .environment_update_grace_period_seconds,
+            None
+        );
     }
 
     #[test]
