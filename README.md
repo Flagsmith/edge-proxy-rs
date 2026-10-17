@@ -128,9 +128,9 @@ docker run \
 
 ### Settings from Environment Variables
 
-Any top-level setting can be set with an environment variable of the same name, case-insensitive. Values starting with
-`[` or `{` are parsed as JSON; anything else is used as-is. Objects are merged into the config file's values, so
-`LOGGING='{"log_level":"DEBUG"}'` keeps the file's other logging settings.
+Any top-level setting can be set with an environment variable of the same name, case-insensitive. String settings take
+the value as-is; all others take JSON. An environment variable replaces the whole setting, so
+`LOGGING='{"log_level":"DEBUG"}'` resets the other logging settings to their defaults.
 
 ```bash
 docker run \

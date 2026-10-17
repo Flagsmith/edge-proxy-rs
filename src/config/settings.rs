@@ -1,5 +1,6 @@
 use crate::error::{EdgeProxyError, Result};
-use serde::{Deserialize, Deserializer, Serialize, de};
+use serde::de::{self, DeserializeOwned};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Map, Value};
 use std::fs;
 use std::io;
@@ -94,7 +95,7 @@ impl Default for HealthCheckSettings {
 #[derive(Debug, Clone, Serialize, Deserialize, Validate)]
 pub struct AppSettings {
     // Optional so the environment set can also come from runtime discovery
-    #[serde(default)]
+    #[serde(default, deserialize_with = "json_or_value")]
     #[validate(nested)]
     pub environment_key_pairs: Vec<EnvironmentKeyPair>,
     /// Credential for the proxy config endpoint; when set, the served
@@ -106,21 +107,21 @@ pub struct AppSettings {
     pub api_url: String,
     #[serde(
         default = "default_api_poll_frequency",
-        deserialize_with = "number_or_string"
+        deserialize_with = "json_or_value"
     )]
     pub api_poll_frequency_seconds: u64,
     #[serde(
         default = "default_api_poll_timeout",
-        deserialize_with = "number_or_string"
+        deserialize_with = "json_or_value"
     )]
     pub api_poll_timeout_seconds: u64,
-    #[serde(default = "default_allow_origins")]
+    #[serde(default = "default_allow_origins", deserialize_with = "json_or_value")]
     pub allow_origins: Vec<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "json_or_value")]
     pub server: ServerSettings,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "json_or_value")]
     pub logging: LoggingSettings,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "json_or_value")]
     pub health_check: HealthCheckSettings,
 }
 
@@ -166,8 +167,12 @@ impl AppSettings {
     }
 
     pub fn from_value(value: Value) -> Result<Self> {
-        let settings: AppSettings = serde_json::from_value(value).map_err(|e| {
-            EdgeProxyError::ConfigurationError(format!("Failed to parse config: {}", e))
+        let settings: AppSettings = serde_path_to_error::deserialize(value).map_err(|e| {
+            EdgeProxyError::ConfigurationError(format!(
+                "Failed to parse config at {}: {}",
+                e.path(),
+                e.inner()
+            ))
         })?;
 
         settings.validate().map_err(|e| {
@@ -200,21 +205,15 @@ fn read_config_file(path: &PathBuf) -> Result<Value> {
     })
 }
 
-// Env values are strings; numeric top-level fields opt in to parsing them
-fn number_or_string<'de, D>(deserializer: D) -> std::result::Result<u64, D::Error>
+// Env values arrive as strings, so non-string fields JSON-decode them
+fn json_or_value<'de, D, T>(deserializer: D) -> std::result::Result<T, D::Error>
 where
     D: Deserializer<'de>,
+    T: DeserializeOwned,
 {
-    #[derive(Deserialize)]
-    #[serde(untagged)]
-    enum NumberOrString {
-        Number(u64),
-        String(String),
-    }
-
-    match NumberOrString::deserialize(deserializer)? {
-        NumberOrString::Number(number) => Ok(number),
-        NumberOrString::String(string) => string.parse().map_err(de::Error::custom),
+    match Value::deserialize(deserializer)? {
+        Value::String(json) => serde_json::from_str(&json).map_err(de::Error::custom),
+        value => T::deserialize(value).map_err(de::Error::custom),
     }
 }
 
@@ -236,31 +235,10 @@ fn apply_env_overrides(
         if !known_fields.contains_key(&key) {
             continue;
         }
-        let value = if raw.trim_start().starts_with(['[', '{']) {
-            serde_json::from_str(&raw).map_err(|e| {
-                EdgeProxyError::ConfigurationError(format!(
-                    "Invalid JSON in environment variable {}: {}",
-                    name, e
-                ))
-            })?
-        } else {
-            Value::String(raw)
-        };
-        deep_merge(fields.entry(key).or_insert(Value::Null), value);
+        fields.insert(key, Value::String(raw));
     }
 
     Ok(config)
-}
-
-fn deep_merge(target: &mut Value, value: Value) {
-    match (target, value) {
-        (Value::Object(target), Value::Object(value)) => {
-            for (key, value) in value {
-                deep_merge(target.entry(key).or_insert(Value::Null), value);
-            }
-        }
-        (target, value) => *target = value,
-    }
 }
 
 pub fn get_settings() -> Result<AppSettings> {
@@ -389,7 +367,7 @@ mod tests {
     }
 
     #[test]
-    fn test_env_partial_object_deep_merges_with_config_file() {
+    fn test_env_object_replaces_config_file_object() {
         // Given
         let config = serde_json::json!({
             "logging": {"log_level": "INFO", "log_format": "json"},
@@ -401,20 +379,32 @@ mod tests {
 
         // Then
         assert_eq!(settings.logging.log_level, "DEBUG");
-        assert_eq!(settings.logging.log_format, "json");
+        assert_eq!(settings.logging.log_format, default_log_format());
     }
 
     #[test]
-    fn test_env_invalid_json_errors_naming_the_variable() {
+    fn test_env_string_field_starting_with_brace_stays_a_string() {
+        // Given
+        let vars = [("PROXY_KEY", "{abc")];
+
+        // When
+        let settings = settings_from(serde_json::json!({}), &vars).unwrap();
+
+        // Then
+        assert_eq!(settings.proxy_key.as_deref(), Some("{abc"));
+    }
+
+    #[test]
+    fn test_env_invalid_json_errors_naming_the_field() {
         // Given
         let vars = [("ENVIRONMENT_KEY_PAIRS", "[{oops")];
 
         // When
-        let result = apply_env_overrides(serde_json::json!({}), env(&vars));
+        let result = settings_from(serde_json::json!({}), &vars);
 
         // Then
         let error = result.unwrap_err().to_string();
-        assert!(error.contains("ENVIRONMENT_KEY_PAIRS"), "{error}");
+        assert!(error.contains("environment_key_pairs"), "{error}");
     }
 
     #[test]
