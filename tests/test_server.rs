@@ -200,10 +200,10 @@ async fn test_post_identity_with_override(
 }
 
 #[rstest]
+#[case::client_key(environment_1_api_key(), &["feature_1", "feature_2"])]
+#[case::server_key(environment_1_server_key(), &["feature_1", "feature_2", "feature_3"])]
 #[tokio::test]
-async fn test_get_identities(
-    #[values(environment_1_api_key(), environment_1_server_key())] environment_key: String,
-) {
+async fn test_get_identities(#[case] environment_key: String, #[case] expected_features: &[&str]) {
     // Given
     let server = setup_test_server().await;
 
@@ -216,7 +216,14 @@ async fn test_get_identities(
     // Then
     response.assert_status_ok();
     let body: serde_json::Value = response.json();
-    assert!(body["flags"].is_array());
+    let mut feature_names: Vec<&str> = body["flags"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["feature"]["name"].as_str().unwrap())
+        .collect();
+    feature_names.sort();
+    assert_eq!(feature_names, expected_features);
     assert!(body["traits"].is_array());
     assert_eq!(body["traits"].as_array().unwrap().len(), 0);
 }
