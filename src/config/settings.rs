@@ -220,9 +220,7 @@ fn apply_env_overrides(
     mut config: Value,
     env: impl IntoIterator<Item = (String, String)>,
 ) -> Result<Value> {
-    let Value::Object(known_fields) = serde_json::to_value(AppSettings::default())? else {
-        unreachable!("AppSettings serializes to an object");
-    };
+    let defaults = serde_json::to_value(AppSettings::default())?;
     let Value::Object(fields) = &mut config else {
         return Err(EdgeProxyError::ConfigurationError(
             "Config file must contain a JSON object".to_string(),
@@ -231,7 +229,7 @@ fn apply_env_overrides(
 
     for (name, raw) in env {
         let key = name.to_lowercase();
-        if !known_fields.contains_key(&key) {
+        if defaults.get(&key).is_none() {
             continue;
         }
         fields.insert(key, Value::String(raw));
