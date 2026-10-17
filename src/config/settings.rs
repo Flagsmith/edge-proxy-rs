@@ -1,5 +1,6 @@
 use crate::error::{EdgeProxyError, Result};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::fs;
 use std::path::PathBuf;
 use validator::Validate;
@@ -154,12 +155,12 @@ impl AppSettings {
     }
 
     pub fn from_file(path: &PathBuf) -> Result<Self> {
-        let contents = fs::read_to_string(path).map_err(|e| {
-            EdgeProxyError::ConfigurationError(format!("Failed to read config file: {}", e))
-        })?;
+        Self::from_value(read_config_file(path)?)
+    }
 
-        let settings: AppSettings = serde_json::from_str(&contents).map_err(|e| {
-            EdgeProxyError::ConfigurationError(format!("Failed to parse config file: {}", e))
+    pub fn from_value(value: Value) -> Result<Self> {
+        let settings: AppSettings = serde_json::from_value(value).map_err(|e| {
+            EdgeProxyError::ConfigurationError(format!("Failed to parse config: {}", e))
         })?;
 
         settings.validate().map_err(|e| {
@@ -172,6 +173,16 @@ impl AppSettings {
 
         Ok(settings)
     }
+}
+
+fn read_config_file(path: &PathBuf) -> Result<Value> {
+    let contents = fs::read_to_string(path).map_err(|e| {
+        EdgeProxyError::ConfigurationError(format!("Failed to read config file: {}", e))
+    })?;
+
+    serde_json::from_str(&contents).map_err(|e| {
+        EdgeProxyError::ConfigurationError(format!("Failed to parse config file: {}", e))
+    })
 }
 
 pub fn get_settings() -> Result<AppSettings> {
