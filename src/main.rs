@@ -8,9 +8,13 @@ const DEFAULT_HOST: IpAddr = IpAddr::V4(Ipv4Addr::UNSPECIFIED);
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let settings = get_settings()?;
+    let (settings, missing_config_file) = get_settings()?;
 
     setup_logging(&settings.logging);
+
+    if let Some(path) = missing_config_file {
+        info!("Configuration file at {} not found", path.display());
+    }
 
     info!("Starting Edge Proxy server...");
     info!("API URL: {}", settings.api_url);

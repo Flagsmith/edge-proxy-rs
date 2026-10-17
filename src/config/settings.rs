@@ -186,21 +186,6 @@ impl AppSettings {
     }
 }
 
-fn load_config_file(config_path: Option<String>) -> Result<Value> {
-    let explicit = config_path.is_some();
-    let path = PathBuf::from(config_path.unwrap_or_else(|| "./config.json".to_string()));
-
-    match read_config_file(&path)? {
-        Some(config) => Ok(config),
-        // Settings may come entirely from environment variables
-        None if !explicit => Ok(Value::Object(Map::new())),
-        None => Err(EdgeProxyError::ConfigurationError(format!(
-            "Config file not found: {}",
-            path.display()
-        ))),
-    }
-}
-
 fn read_config_file(path: &PathBuf) -> Result<Option<Value>> {
     let config_str = match fs::read_to_string(path) {
         Ok(config_str) => config_str,
@@ -252,12 +237,20 @@ fn apply_env_overrides(
     Ok(config)
 }
 
-pub fn get_settings() -> Result<AppSettings> {
+pub fn get_settings() -> Result<(AppSettings, Option<PathBuf>)> {
+    let config_path = std::env::var("CONFIG_PATH").unwrap_or_else(|_| "./config.json".to_string());
+    let path = PathBuf::from(config_path);
+
+    let file_config = read_config_file(&path)?;
+    let missing_config_file = file_config.is_none().then(|| path.clone());
+    // Settings may come entirely from environment variables
+    let file_config = file_config.unwrap_or_else(|| Value::Object(Map::new()));
+
     // vars() panics on non-UTF-8 entries, even ones unrelated to the proxy
     let env = std::env::vars_os()
         .filter_map(|(name, value)| Some((name.into_string().ok()?, value.into_string().ok()?)));
-    let config = apply_env_overrides(load_config_file(std::env::var("CONFIG_PATH").ok())?, env)?;
-    AppSettings::from_value(config)
+    let config = apply_env_overrides(file_config, env)?;
+    Ok((AppSettings::from_value(config)?, missing_config_file))
 }
 
 #[cfg(test)]
@@ -304,19 +297,6 @@ mod tests {
 
         // Then
         assert!(config.is_none());
-    }
-
-    #[test]
-    fn test_missing_explicit_config_path_is_an_error() {
-        // Given
-        let config_path = Some("/nonexistent/config.json".to_string());
-
-        // When
-        let result = load_config_file(config_path);
-
-        // Then
-        let error = result.unwrap_err().to_string();
-        assert!(error.contains("/nonexistent/config.json"), "{error}");
     }
 
     fn env(vars: &[(&str, &str)]) -> Vec<(String, String)> {

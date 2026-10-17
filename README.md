@@ -84,7 +84,7 @@ docker run --rm -p 8000:8000 edge-proxy-rs-local
 ## Configuration
 
 Edge Proxy loads configuration from `./config.json` and environment variables. Environment variables take precedence, and
-the config file is optional unless `CONFIG_PATH` is set.
+the config file is optional.
 
 ### Configuration Options
 
@@ -145,7 +145,7 @@ docker run \
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `CONFIG_PATH` | Path to config file; must exist when set | `./config.json` |
+| `CONFIG_PATH` | Path to config file | `./config.json` |
 | `RUST_LOG` | Log level (`error`, `warn`, `info`, `debug`, `trace`) | `info` |
 | `TOKIO_WORKER_THREADS` | Number of async worker threads | CPU cores |
 
