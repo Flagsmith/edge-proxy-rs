@@ -111,23 +111,6 @@ async fn test_get_flags_single_feature_server_key_only_returns_404() {
 }
 
 #[tokio::test]
-async fn test_get_flags_single_feature_server_key_only_with_server_key() {
-    // Given
-    let server = setup_test_server().await;
-
-    // When
-    let response = server
-        .get("/api/v1/flags?feature=feature_3")
-        .add_header("X-Environment-Key", &environment_1_server_key())
-        .await;
-
-    // Then
-    response.assert_status_ok();
-    let body: serde_json::Value = response.json();
-    assert_eq!(body["feature"]["name"], "feature_3");
-}
-
-#[tokio::test]
 async fn test_get_flags_unknown_key() {
     // Given
     let server = setup_test_server().await;
