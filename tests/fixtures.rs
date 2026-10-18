@@ -4,6 +4,10 @@ pub fn environment_1_api_key() -> String {
     "environment_1_api_key".to_string()
 }
 
+pub fn environment_1_server_key() -> String {
+    "ser.test_key".to_string()
+}
+
 pub fn environment_1() -> serde_json::Value {
     json!({
         "updated_at": "1969-07-20T20:17:40Z",

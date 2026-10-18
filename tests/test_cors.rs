@@ -11,7 +11,7 @@ const ORIGIN: &str = "https://app.example.com";
 async fn server_allowing(allow_origins: &[&str]) -> TestServer {
     let settings = AppSettings {
         environment_key_pairs: vec![EnvironmentKeyPair {
-            server_side_key: "ser.test_key".to_string(),
+            server_side_key: environment_1_server_key(),
             client_side_key: environment_1_api_key(),
         }],
         allow_origins: allow_origins.iter().map(|o| o.to_string()).collect(),

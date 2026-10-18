@@ -296,13 +296,11 @@ impl EnvironmentService {
         environment_key: &str,
         feature_name: Option<&str>,
     ) -> Result<Vec<APIFeatureState>> {
-        // TODO: serve server-side keys here, see
-        // https://github.com/Flagsmith/edge-proxy-rs/issues/24
-        self.resolve_key(environment_key)?;
+        let keys = self.resolve_key(environment_key)?;
 
         let context = self
             .cache
-            .get_context(environment_key)
+            .get_context(&keys.client_key)
             .await
             .ok_or_else(|| {
                 EdgeProxyError::ServiceUnavailable("Environment not loaded".to_string())
@@ -319,8 +317,8 @@ impl EnvironmentService {
             }
         }
 
-        if !environment_key.starts_with("ser.") {
-            if let Some(document) = self.cache.get_environment(environment_key).await {
+        if environment_key == keys.client_key {
+            if let Some(document) = self.cache.get_environment(&keys.client_key).await {
                 let server_key_only_ids = Self::extract_server_key_only_ids(&document);
                 flag_results =
                     filter_out_server_key_only_flag_results(flag_results, &server_key_only_ids);
@@ -342,12 +340,12 @@ impl EnvironmentService {
         identity: &IdentityWithTraits,
         environment_key: &str,
     ) -> Result<IdentityResponse> {
-        self.resolve_key(environment_key)?;
+        let keys = self.resolve_key(environment_key)?;
 
         // Get pre-computed context from cache
         let context = self
             .cache
-            .get_context(environment_key)
+            .get_context(&keys.client_key)
             .await
             .ok_or_else(|| {
                 EdgeProxyError::ServiceUnavailable("Environment not loaded".to_string())
@@ -364,9 +362,9 @@ impl EnvironmentService {
         let mut flag_results: Vec<FlagResult> = evaluation_result.flags.into_values().collect();
 
         // Filter out server-key-only features if using client key
-        if !environment_key.starts_with("ser.") {
+        if environment_key == keys.client_key {
             // Get server_key_only_feature_ids from cached document
-            if let Some(document) = self.cache.get_environment(environment_key).await {
+            if let Some(document) = self.cache.get_environment(&keys.client_key).await {
                 let server_key_only_ids = Self::extract_server_key_only_ids(&document);
                 flag_results =
                     filter_out_server_key_only_flag_results(flag_results, &server_key_only_ids);
