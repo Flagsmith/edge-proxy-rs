@@ -1,6 +1,9 @@
 use crate::error::{EdgeProxyError, Result};
-use serde::{Deserialize, Serialize};
+use serde::de::{self, DeserializeOwned};
+use serde::{Deserialize, Deserializer, Serialize};
+use serde_json::{Map, Value};
 use std::fs;
+use std::io;
 use std::path::PathBuf;
 use validator::Validate;
 
@@ -78,13 +81,19 @@ impl Default for LoggingSettings {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HealthCheckSettings {
+    #[serde(default = "default_environment_update_grace_period_seconds")]
     pub environment_update_grace_period_seconds: Option<u64>,
+}
+
+fn default_environment_update_grace_period_seconds() -> Option<u64> {
+    Some(120)
 }
 
 impl Default for HealthCheckSettings {
     fn default() -> Self {
         Self {
-            environment_update_grace_period_seconds: Some(120),
+            environment_update_grace_period_seconds:
+                default_environment_update_grace_period_seconds(),
         }
     }
 }
@@ -92,7 +101,7 @@ impl Default for HealthCheckSettings {
 #[derive(Debug, Clone, Serialize, Deserialize, Validate)]
 pub struct AppSettings {
     // Optional so the environment set can also come from runtime discovery
-    #[serde(default)]
+    #[serde(default, deserialize_with = "json_str_or_native")]
     #[validate(nested)]
     pub environment_key_pairs: Vec<EnvironmentKeyPair>,
     /// Credential for the proxy config endpoint; when set, the served
@@ -102,17 +111,26 @@ pub struct AppSettings {
     pub proxy_key: Option<String>,
     #[serde(default = "default_api_url")]
     pub api_url: String,
-    #[serde(default = "default_api_poll_frequency")]
+    #[serde(
+        default = "default_api_poll_frequency",
+        deserialize_with = "json_str_or_native"
+    )]
     pub api_poll_frequency_seconds: u64,
-    #[serde(default = "default_api_poll_timeout")]
+    #[serde(
+        default = "default_api_poll_timeout",
+        deserialize_with = "json_str_or_native"
+    )]
     pub api_poll_timeout_seconds: u64,
-    #[serde(default = "default_allow_origins")]
+    #[serde(
+        default = "default_allow_origins",
+        deserialize_with = "json_str_or_native"
+    )]
     pub allow_origins: Vec<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "json_str_or_native")]
     pub server: ServerSettings,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "json_str_or_native")]
     pub logging: LoggingSettings,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "json_str_or_native")]
     pub health_check: HealthCheckSettings,
 }
 
@@ -153,13 +171,13 @@ impl AppSettings {
         Self::default()
     }
 
-    pub fn from_file(path: &PathBuf) -> Result<Self> {
-        let contents = fs::read_to_string(path).map_err(|e| {
-            EdgeProxyError::ConfigurationError(format!("Failed to read config file: {}", e))
-        })?;
-
-        let settings: AppSettings = serde_json::from_str(&contents).map_err(|e| {
-            EdgeProxyError::ConfigurationError(format!("Failed to parse config file: {}", e))
+    pub fn from_value(value: Value) -> Result<Self> {
+        let settings: AppSettings = serde_path_to_error::deserialize(value).map_err(|e| {
+            EdgeProxyError::ConfigurationError(format!(
+                "Failed to parse config at {}: {}",
+                e.path(),
+                e.inner()
+            ))
         })?;
 
         settings.validate().map_err(|e| {
@@ -174,11 +192,71 @@ impl AppSettings {
     }
 }
 
-pub fn get_settings() -> Result<AppSettings> {
+fn read_config_file(path: &PathBuf) -> Result<Option<Value>> {
+    let config_str = match fs::read_to_string(path) {
+        Ok(config_str) => config_str,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => {
+            return Err(EdgeProxyError::ConfigurationError(format!(
+                "Failed to read config file: {}",
+                e
+            )));
+        }
+    };
+
+    serde_json::from_str(&config_str).map(Some).map_err(|e| {
+        EdgeProxyError::ConfigurationError(format!("Failed to parse config file: {}", e))
+    })
+}
+
+fn json_str_or_native<'de, D, T>(deserializer: D) -> std::result::Result<T, D::Error>
+where
+    D: Deserializer<'de>,
+    T: DeserializeOwned,
+{
+    match Value::deserialize(deserializer)? {
+        Value::String(json) => serde_json::from_str(&json).map_err(de::Error::custom),
+        value => T::deserialize(value).map_err(de::Error::custom),
+    }
+}
+
+fn apply_env_overrides(
+    mut config: Value,
+    env: impl IntoIterator<Item = (String, String)>,
+) -> Result<Value> {
+    let defaults = serde_json::to_value(AppSettings::default())?;
+    let Value::Object(fields) = &mut config else {
+        return Err(EdgeProxyError::ConfigurationError(
+            "Config file must contain a JSON object".to_string(),
+        ));
+    };
+
+    for (name, raw) in env {
+        let key = name.to_lowercase();
+        // Compose passes `VAR: ${VAR}` through as empty when unset on the host
+        if raw.is_empty() || defaults.get(&key).is_none() {
+            continue;
+        }
+        fields.insert(key, Value::String(raw));
+    }
+
+    Ok(config)
+}
+
+pub fn get_settings() -> Result<(AppSettings, Option<PathBuf>)> {
     let config_path = std::env::var("CONFIG_PATH").unwrap_or_else(|_| "./config.json".to_string());
     let path = PathBuf::from(config_path);
 
-    AppSettings::from_file(&path)
+    let file_config = read_config_file(&path)?;
+    let missing_config_file = file_config.is_none().then(|| path.clone());
+    // Settings may come entirely from environment variables
+    let file_config = file_config.unwrap_or_else(|| Value::Object(Map::new()));
+
+    // vars() panics on non-UTF-8 entries, even ones unrelated to the proxy
+    let env = std::env::vars_os()
+        .filter_map(|(name, value)| Some((name.into_string().ok()?, value.into_string().ok()?)));
+    let config = apply_env_overrides(file_config, env)?;
+    Ok((AppSettings::from_value(config)?, missing_config_file))
 }
 
 #[cfg(test)]
@@ -213,6 +291,216 @@ mod tests {
         // Then it behaves like an explicitly empty list and validates
         assert!(settings.environment_key_pairs.is_empty());
         assert!(settings.validate().is_ok());
+    }
+
+    #[test]
+    fn test_missing_config_file_reads_as_none() {
+        // Given
+        let path = PathBuf::from("/nonexistent/config.json");
+
+        // When
+        let config = read_config_file(&path).unwrap();
+
+        // Then
+        assert!(config.is_none());
+    }
+
+    fn env(vars: &[(&str, &str)]) -> Vec<(String, String)> {
+        vars.iter()
+            .map(|(name, value)| (name.to_string(), value.to_string()))
+            .collect()
+    }
+
+    fn settings_from(config: Value, vars: &[(&str, &str)]) -> Result<AppSettings> {
+        AppSettings::from_value(apply_env_overrides(config, env(vars))?)
+    }
+
+    #[test]
+    fn test_env_only_config_loads_environment_key_pairs() {
+        // Given
+        let vars = [(
+            "ENVIRONMENT_KEY_PAIRS",
+            r#"[{"server_side_key":"ser.abc","client_side_key":"abc"}]"#,
+        )];
+
+        // When
+        let settings = settings_from(serde_json::json!({}), &vars).unwrap();
+
+        // Then
+        assert_eq!(settings.environment_key_pairs.len(), 1);
+        assert_eq!(settings.environment_key_pairs[0].client_side_key, "abc");
+    }
+
+    #[test]
+    fn test_env_takes_precedence_over_config_file() {
+        // Given
+        let config = serde_json::json!({
+            "api_url": "https://file.example.com/api/v1",
+            "api_poll_frequency_seconds": 30,
+        });
+        let vars = [
+            ("API_URL", "https://env.example.com/api/v1"),
+            ("API_POLL_FREQUENCY_SECONDS", "5"),
+        ];
+
+        // When
+        let settings = settings_from(config, &vars).unwrap();
+
+        // Then
+        assert_eq!(settings.api_url, "https://env.example.com/api/v1");
+        assert_eq!(settings.api_poll_frequency_seconds, 5);
+    }
+
+    #[test]
+    fn test_env_raw_field_keeps_numeric_looking_value_as_string() {
+        // Given
+        let vars = [("PROXY_KEY", "123")];
+
+        // When
+        let settings = settings_from(serde_json::json!({}), &vars).unwrap();
+
+        // Then
+        assert_eq!(settings.proxy_key.as_deref(), Some("123"));
+    }
+
+    #[test]
+    fn test_env_names_are_case_insensitive() {
+        // Given
+        let vars = [("api_poll_timeout_seconds", "9")];
+
+        // When
+        let settings = settings_from(serde_json::json!({}), &vars).unwrap();
+
+        // Then
+        assert_eq!(settings.api_poll_timeout_seconds, 9);
+    }
+
+    #[test]
+    fn test_env_object_replaces_config_file_object() {
+        // Given
+        let config = serde_json::json!({
+            "logging": {"log_level": "INFO", "log_format": "json"},
+        });
+        let vars = [("LOGGING", r#"{"log_level":"DEBUG"}"#)];
+
+        // When
+        let settings = settings_from(config, &vars).unwrap();
+
+        // Then
+        assert_eq!(settings.logging.log_level, "DEBUG");
+        assert_eq!(settings.logging.log_format, default_log_format());
+    }
+
+    #[test]
+    fn test_env_string_field_starting_with_brace_stays_a_string() {
+        // Given
+        let vars = [("PROXY_KEY", "{abc")];
+
+        // When
+        let settings = settings_from(serde_json::json!({}), &vars).unwrap();
+
+        // Then
+        assert_eq!(settings.proxy_key.as_deref(), Some("{abc"));
+    }
+
+    #[test]
+    fn test_env_invalid_json_errors_naming_the_field() {
+        // Given
+        let vars = [("ENVIRONMENT_KEY_PAIRS", "[{oops")];
+
+        // When
+        let result = settings_from(serde_json::json!({}), &vars);
+
+        // Then
+        let error = result.unwrap_err().to_string();
+        assert!(error.contains("environment_key_pairs"), "{error}");
+    }
+
+    #[test]
+    fn test_config_file_numbers_still_parse() {
+        // Given
+        let config = serde_json::json!({"api_poll_timeout_seconds": 7});
+
+        // When
+        let settings = settings_from(config, &[]).unwrap();
+
+        // Then
+        assert_eq!(settings.api_poll_timeout_seconds, 7);
+    }
+
+    #[test]
+    fn test_env_non_numeric_value_for_number_field_is_rejected() {
+        // Given
+        let vars = [("API_POLL_FREQUENCY_SECONDS", "soon")];
+
+        // When
+        let result = settings_from(serde_json::json!({}), &vars);
+
+        // Then
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_health_check_without_grace_period_uses_default() {
+        // Given
+        let vars = [("HEALTH_CHECK", "{}")];
+
+        // When
+        let settings = settings_from(serde_json::json!({}), &vars).unwrap();
+
+        // Then
+        assert_eq!(
+            settings
+                .health_check
+                .environment_update_grace_period_seconds,
+            Some(120)
+        );
+    }
+
+    #[test]
+    fn test_health_check_with_null_grace_period_disables_staleness_check() {
+        // Given
+        let vars = [(
+            "HEALTH_CHECK",
+            r#"{"environment_update_grace_period_seconds":null}"#,
+        )];
+
+        // When
+        let settings = settings_from(serde_json::json!({}), &vars).unwrap();
+
+        // Then
+        assert_eq!(
+            settings
+                .health_check
+                .environment_update_grace_period_seconds,
+            None
+        );
+    }
+
+    #[test]
+    fn test_env_empty_values_are_ignored() {
+        // Given
+        let config = serde_json::json!({"proxy_key": "pk.from-file"});
+        let vars = [("PROXY_KEY", ""), ("ENVIRONMENT_KEY_PAIRS", "")];
+
+        // When
+        let settings = settings_from(config, &vars).unwrap();
+
+        // Then
+        assert_eq!(settings.proxy_key.as_deref(), Some("pk.from-file"));
+        assert!(settings.environment_key_pairs.is_empty());
+    }
+
+    #[test]
+    fn test_env_unrelated_variables_are_ignored() {
+        // Given
+        let vars = [("PATH", "/usr/bin"), ("HOME", "not json")];
+
+        // When
+        let config = apply_env_overrides(serde_json::json!({}), env(&vars)).unwrap();
+
+        // Then
+        assert_eq!(config, serde_json::json!({}));
     }
 
     #[test]
