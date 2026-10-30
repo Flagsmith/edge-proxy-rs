@@ -1,5 +1,7 @@
 use async_trait::async_trait;
-use flagsmith_flag_engine::engine_eval::{EngineEvaluationContext, environment_to_context};
+use flagsmith_flag_engine::engine_eval::{
+    EngineEvaluationContext, environment_to_context, remove_identity_from_context,
+};
 use flagsmith_flag_engine::environments::Environment as FlagsmithEnvironment;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -16,6 +18,13 @@ pub trait EnvironmentsCache: Send + Sync {
 
     /// Get the pre-computed evaluation context (for flag evaluation)
     async fn get_context(&self, environment_key: &str) -> Option<EngineEvaluationContext>;
+
+    /// Get the pre-computed evaluation context without segments that need an
+    /// identity (for environment flag evaluation)
+    async fn get_identity_free_context(
+        &self,
+        environment_key: &str,
+    ) -> Option<EngineEvaluationContext>;
 
     /// Store environment document and compute context. Returns true if changed.
     async fn put_environment(&self, environment_key: &str, document: Value) -> bool;
@@ -35,6 +44,9 @@ pub struct LocalMemEnvironmentsCache {
     environments: Arc<RwLock<HashMap<String, Arc<Value>>>>,
     /// Pre-computed evaluation contexts (for flag evaluation)
     contexts: Arc<RwLock<HashMap<String, EngineEvaluationContext>>>,
+    /// Pre-computed evaluation contexts without segments that need an identity
+    /// (for environment flag evaluation)
+    identity_free_contexts: Arc<RwLock<HashMap<String, EngineEvaluationContext>>>,
     /// Identity overrides extracted from environments
     identity_overrides: Arc<RwLock<HashMap<String, HashMap<String, Value>>>>,
 }
@@ -44,6 +56,7 @@ impl LocalMemEnvironmentsCache {
         Self {
             environments: Arc::new(RwLock::new(HashMap::new())),
             contexts: Arc::new(RwLock::new(HashMap::new())),
+            identity_free_contexts: Arc::new(RwLock::new(HashMap::new())),
             identity_overrides: Arc::new(RwLock::new(HashMap::new())),
         }
     }
@@ -61,9 +74,18 @@ impl EnvironmentsCache for LocalMemEnvironmentsCache {
         contexts.get(environment_key).cloned()
     }
 
+    async fn get_identity_free_context(
+        &self,
+        environment_key: &str,
+    ) -> Option<EngineEvaluationContext> {
+        let identity_free_contexts = self.identity_free_contexts.read().await;
+        identity_free_contexts.get(environment_key).cloned()
+    }
+
     async fn put_environment(&self, environment_key: &str, document: Value) -> bool {
         let mut environments = self.environments.write().await;
         let mut contexts = self.contexts.write().await;
+        let mut identity_free_contexts = self.identity_free_contexts.write().await;
         let mut identity_overrides = self.identity_overrides.write().await;
 
         // Check if document changed
@@ -93,6 +115,10 @@ impl EnvironmentsCache for LocalMemEnvironmentsCache {
             if let Ok(environment) = serde_json::from_value::<Environment>(document.clone()) {
                 let flagsmith_env: FlagsmithEnvironment = environment.to_flagsmith_environment();
                 let context = environment_to_context(flagsmith_env);
+                identity_free_contexts.insert(
+                    environment_key.to_string(),
+                    remove_identity_from_context(&context),
+                );
                 contexts.insert(environment_key.to_string(), context);
             }
 
@@ -106,10 +132,12 @@ impl EnvironmentsCache for LocalMemEnvironmentsCache {
         // Same guard order as put_environment so the two can't deadlock
         let mut environments = self.environments.write().await;
         let mut contexts = self.contexts.write().await;
+        let mut identity_free_contexts = self.identity_free_contexts.write().await;
         let mut identity_overrides = self.identity_overrides.write().await;
 
         environments.remove(environment_key);
         contexts.remove(environment_key);
+        identity_free_contexts.remove(environment_key);
         identity_overrides.remove(environment_key);
     }
 
@@ -144,6 +172,7 @@ mod tests {
         // Then
         assert!(cache.get_environment("client_a").await.is_none());
         assert!(cache.get_context("client_a").await.is_none());
+        assert!(cache.get_identity_free_context("client_a").await.is_none());
         assert!(cache.get_identity("client_a", "user_1").await.is_none());
     }
 
