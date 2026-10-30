@@ -1,3 +1,5 @@
+#![allow(non_snake_case)]
+
 mod fixtures;
 
 use axum_test::TestServer;
@@ -8,6 +10,10 @@ use rstest::rstest;
 use serde_json::json;
 
 async fn setup_test_server() -> TestServer {
+    setup_test_server_with_environment(environment_1()).await
+}
+
+async fn setup_test_server_with_environment(environment: serde_json::Value) -> TestServer {
     let settings = AppSettings {
         environment_key_pairs: vec![EnvironmentKeyPair {
             server_side_key: environment_1_server_key(),
@@ -21,7 +27,7 @@ async fn setup_test_server() -> TestServer {
 
     service
         .cache
-        .put_environment(&environment_1_api_key(), environment_1())
+        .put_environment(&environment_1_api_key(), environment)
         .await;
 
     TestServer::new(app).unwrap()
@@ -126,6 +132,40 @@ async fn test_get_flags_unknown_key() {
     let body: serde_json::Value = response.json();
     assert_eq!(body["status"], "unauthorized");
     assert!(body["message"].as_str().unwrap().contains("unknown key"));
+}
+
+#[tokio::test]
+async fn test_get_flags__segment_needing_identity__returns_environment_default() {
+    // Given
+    let mut environment = environment_1();
+    environment["project"]["segments"] = json!([{
+        "id": 2,
+        "name": "without_plan",
+        "rules": [{
+            "type": "ALL",
+            "rules": [],
+            "conditions": [{"operator": "IS_NOT_SET", "property_": "plan", "value": null}],
+        }],
+        "feature_states": [{
+            "multivariate_feature_state_values": [],
+            "feature_state_value": "segment_override",
+            "feature": {"name": "feature_2", "type": "STANDARD", "id": 2},
+            "enabled": true,
+            "featurestate_uuid": "uuid-segment-2",
+        }],
+    }]);
+    let server = setup_test_server_with_environment(environment).await;
+
+    // When
+    let response = server
+        .get("/api/v1/flags?feature=feature_2")
+        .add_header("X-Environment-Key", &environment_1_api_key())
+        .await;
+
+    // Then
+    response.assert_status_ok();
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["feature_state_value"], "2.3");
 }
 
 #[rstest]

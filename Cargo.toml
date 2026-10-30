@@ -22,7 +22,7 @@ chrono = { version = "0.4", features = ["serde"] }
 async-trait = "0.1"
 http = "1"
 validator = { version = "0.20", features = ["derive"] }
-flagsmith-flag-engine = "0.6"
+flagsmith-flag-engine = { git = "https://github.com/Flagsmith/flagsmith-rust-flag-engine", rev = "0552139222db80ea1ec16ec5a6a7e4ae5912bcc5" }
 
 [dev-dependencies]
 axum-test = "18"

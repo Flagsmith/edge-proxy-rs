@@ -8,7 +8,9 @@ use crate::models::{
 use crate::services::feature_utils::filter_out_server_key_only_flag_results;
 use chrono::{DateTime, Utc};
 use flagsmith_flag_engine::engine::get_evaluation_result;
-use flagsmith_flag_engine::engine_eval::{FlagResult, add_identity_to_context};
+use flagsmith_flag_engine::engine_eval::{
+    FlagResult, add_identity_to_context, remove_identity_from_context,
+};
 use flagsmith_flag_engine::identities::Trait as FlagsmithTrait;
 use reqwest::header::HeaderMap;
 use reqwest::{Client, Url};
@@ -306,7 +308,7 @@ impl EnvironmentService {
                 EdgeProxyError::ServiceUnavailable("Environment not loaded".to_string())
             })?;
 
-        let evaluation_result = get_evaluation_result(&context);
+        let evaluation_result = get_evaluation_result(&remove_identity_from_context(&context));
 
         let mut flag_results: Vec<FlagResult> = evaluation_result.flags.into_values().collect();
 
