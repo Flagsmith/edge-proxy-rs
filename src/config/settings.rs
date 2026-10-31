@@ -244,11 +244,11 @@ fn apply_env_overrides(
 }
 
 pub fn get_settings() -> Result<(AppSettings, Option<PathBuf>)> {
-    let config_path = std::env::var("CONFIG_PATH").unwrap_or_else(|_| "./config.json".to_string());
-    let path = PathBuf::from(config_path);
+    let config_file_path =
+        PathBuf::from(std::env::var("CONFIG_PATH").unwrap_or_else(|_| "./config.json".to_string()));
 
-    let file_config = read_config_file(&path)?;
-    let missing_config_file = file_config.is_none().then(|| path.clone());
+    let file_config = read_config_file(&config_file_path)?;
+    let missing_config_file = file_config.is_none().then(|| config_file_path.clone());
     // Settings may come entirely from environment variables
     let file_config = file_config.unwrap_or_else(|| Value::Object(Map::new()));
 
