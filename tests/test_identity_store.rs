@@ -3,7 +3,7 @@ mod fixtures;
 use async_trait::async_trait;
 use axum_test::TestServer;
 use edge_proxy::config::settings::{AppSettings, EnvironmentKeyPair};
-use edge_proxy::identities::{IdentityStore, IdentityTraits, RequestOrigin};
+use edge_proxy::identities::{EnvironmentKeyType, IdentityStore, IdentityTraits};
 use edge_proxy::models::{IdentityWithTraits, TraitModel};
 use edge_proxy::routes::create_router;
 use fixtures::*;
@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex};
 struct SaveCall {
     environment_api_key: Value,
     identifier: String,
-    origin: RequestOrigin,
+    key_type: EnvironmentKeyType,
 }
 
 struct RecordingIdentityStore {
@@ -49,12 +49,12 @@ impl IdentityStore for RecordingIdentityStore {
         &self,
         environment: &Value,
         identity: &IdentityWithTraits,
-        origin: RequestOrigin,
+        key_type: EnvironmentKeyType,
     ) {
         self.save_calls.lock().unwrap().push(SaveCall {
             environment_api_key: environment["api_key"].clone(),
             identifier: identity.identifier.clone(),
-            origin,
+            key_type,
         });
     }
 }
@@ -181,12 +181,12 @@ async fn test_identity_with_store_returns_loaded_traits_without_system_traits() 
 }
 
 #[rstest]
-#[case::client_key(environment_1_api_key(), RequestOrigin::Client)]
-#[case::server_key(environment_1_server_key(), RequestOrigin::Server)]
+#[case::client_key(environment_1_api_key(), EnvironmentKeyType::Client)]
+#[case::server_key(environment_1_server_key(), EnvironmentKeyType::Server)]
 #[tokio::test]
-async fn test_identity_with_store_saves_once_with_origin(
+async fn test_identity_with_store_saves_once_with_key_type(
     #[case] environment_key: String,
-    #[case] expected_origin: RequestOrigin,
+    #[case] expected_key_type: EnvironmentKeyType,
 ) {
     // Given
     let identity_store = Arc::new(RecordingIdentityStore::new(Vec::new(), Vec::new()));
@@ -201,7 +201,7 @@ async fn test_identity_with_store_saves_once_with_origin(
         vec![SaveCall {
             environment_api_key: json!(environment_1_api_key()),
             identifier: "identity_1".to_string(),
-            origin: expected_origin,
+            key_type: expected_key_type,
         }]
     );
 }

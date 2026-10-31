@@ -1,3 +1,3 @@
 pub mod store;
 
-pub use store::{IdentityStore, IdentityTraits, RequestOrigin};
+pub use store::{EnvironmentKeyType, IdentityStore, IdentityTraits};

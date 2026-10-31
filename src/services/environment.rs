@@ -2,7 +2,7 @@ use crate::cache::{EnvironmentsCache, LocalMemEnvironmentsCache};
 use crate::config::settings::AppSettings;
 use crate::environments::{EnvironmentIndex, EnvironmentKeys};
 use crate::error::{EdgeProxyError, Result};
-use crate::identities::{IdentityStore, RequestOrigin};
+use crate::identities::{EnvironmentKeyType, IdentityStore};
 use crate::models::{
     APIFeatureState, IdentityResponse, IdentityWithTraits, ProxyConfigEnvironment, TraitModel,
 };
@@ -380,12 +380,12 @@ impl EnvironmentService {
             )
             .await?;
 
-        let origin = if environment_key == keys.client_key {
-            RequestOrigin::Client
+        let key_type = if environment_key == keys.client_key {
+            EnvironmentKeyType::Client
         } else {
-            RequestOrigin::Server
+            EnvironmentKeyType::Server
         };
-        identity_store.save_traits(&environment, identity, origin);
+        identity_store.save_traits(&environment, identity, key_type);
 
         Ok(response)
     }

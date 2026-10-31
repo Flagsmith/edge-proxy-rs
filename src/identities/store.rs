@@ -13,7 +13,7 @@ pub trait IdentityStore: Send + Sync {
         &self,
         environment: &serde_json::Value,
         identity: &IdentityWithTraits,
-        origin: RequestOrigin,
+        key_type: EnvironmentKeyType,
     );
 }
 
@@ -24,7 +24,7 @@ pub struct IdentityTraits {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RequestOrigin {
+pub enum EnvironmentKeyType {
     Client,
     Server,
 }
