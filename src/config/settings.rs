@@ -247,16 +247,17 @@ pub fn get_settings() -> Result<(AppSettings, Option<PathBuf>)> {
     let config_file_path =
         PathBuf::from(std::env::var("CONFIG_PATH").unwrap_or_else(|_| "./config.json".to_string()));
 
-    let file_config = read_config_file(&config_file_path)?;
-    let missing_config_file = file_config.is_none().then(|| config_file_path.clone());
-    // Settings may come entirely from environment variables
-    let file_config = file_config.unwrap_or_else(|| Value::Object(Map::new()));
+    let (file_config, missing_config_file_path) = match read_config_file(&config_file_path)? {
+        Some(file_config) => (file_config, None),
+        // Settings may come entirely from environment variables
+        None => (Value::Object(Map::new()), Some(config_file_path)),
+    };
 
     // vars() panics on non-UTF-8 entries, even ones unrelated to the proxy
     let env = std::env::vars_os()
         .filter_map(|(name, value)| Some((name.into_string().ok()?, value.into_string().ok()?)));
     let config = apply_env_overrides(file_config, env)?;
-    Ok((AppSettings::from_value(config)?, missing_config_file))
+    Ok((AppSettings::from_value(config)?, missing_config_file_path))
 }
 
 #[cfg(test)]

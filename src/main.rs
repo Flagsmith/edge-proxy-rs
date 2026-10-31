@@ -8,11 +8,11 @@ const DEFAULT_HOST: IpAddr = IpAddr::V4(Ipv4Addr::UNSPECIFIED);
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let (settings, missing_config_file) = get_settings()?;
+    let (settings, missing_config_file_path) = get_settings()?;
 
     setup_logging(&settings.logging);
 
-    if let Some(path) = missing_config_file {
+    if let Some(path) = missing_config_file_path {
         info!("Configuration file at {} not found", path.display());
     }
 
