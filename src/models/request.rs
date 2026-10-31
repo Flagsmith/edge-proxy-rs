@@ -1,14 +1,38 @@
 use flagsmith_flag_engine::identities::Trait as FlagsmithTrait;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{Value, json};
+use std::collections::HashSet;
 use std::fmt;
 use std::hash::{Hash, Hasher};
-use validator::Validate;
+use validator::{Validate, ValidationError};
+
+pub const TRAIT_KEY_MAX_LENGTH: u64 = 200;
+pub const TRAIT_VALUE_MAX_LENGTH: u64 = 2000;
+pub const IDENTIFIER_MAX_LENGTH: u64 = 2000;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Validate, PartialEq, Eq)]
 pub struct TraitModel {
+    #[validate(length(max = TRAIT_KEY_MAX_LENGTH, message = "must be at most 200 characters"))]
     pub trait_key: String,
-    pub trait_value: serde_json::Value,
+    #[validate(custom(function = "validate_trait_value"))]
+    pub trait_value: Value,
+    #[serde(default, skip_serializing)]
+    pub transient: bool,
+}
+
+// Core stores strings, lists and objects in a varchar(2000) column.
+fn validate_trait_value(value: &Value) -> Result<(), ValidationError> {
+    let length = match value {
+        Value::String(s) => s.chars().count(),
+        Value::Array(_) | Value::Object(_) => value.to_string().chars().count(),
+        _ => return Ok(()),
+    };
+    if length as u64 > TRAIT_VALUE_MAX_LENGTH {
+        return Err(
+            ValidationError::new("length").with_message("must be at most 2000 characters".into())
+        );
+    }
+    Ok(())
 }
 
 impl TraitModel {
@@ -32,9 +56,13 @@ impl From<&TraitModel> for FlagsmithTrait {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Validate)]
 pub struct IdentityWithTraits {
+    #[validate(length(max = IDENTIFIER_MAX_LENGTH, message = "must be at most 2000 characters"))]
     pub identifier: String,
     #[serde(default)]
+    #[validate(nested)]
     pub traits: Vec<TraitModel>,
+    #[serde(default, skip_serializing)]
+    pub transient: bool,
 }
 
 impl IdentityWithTraits {
@@ -42,11 +70,24 @@ impl IdentityWithTraits {
         Self {
             identifier,
             traits: Vec::new(),
+            transient: false,
         }
     }
 
     pub fn with_traits(identifier: String, traits: Vec<TraitModel>) -> Self {
-        Self { identifier, traits }
+        Self {
+            identifier,
+            traits,
+            transient: false,
+        }
+    }
+
+    pub fn with_unique_traits(mut self) -> Self {
+        let mut seen = HashSet::new();
+        self.traits.reverse();
+        self.traits.retain(|t| seen.insert(t.trait_key.clone()));
+        self.traits.reverse();
+        self
     }
 }
 
@@ -90,8 +131,115 @@ impl Eq for IdentityWithTraits {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rstest::rstest;
     use serde_json::json;
     use std::collections::hash_map::DefaultHasher;
+
+    fn identity(identifier: &str, trait_key: &str, trait_value: Value) -> IdentityWithTraits {
+        IdentityWithTraits::with_traits(
+            identifier.to_string(),
+            vec![TraitModel {
+                trait_key: trait_key.to_string(),
+                trait_value,
+                transient: false,
+            }],
+        )
+    }
+
+    #[rstest]
+    #[case::identifier_at_limit(identity(&"i".repeat(2000), "k", json!("v")))]
+    #[case::trait_key_at_limit(identity("id", &"k".repeat(200), json!("v")))]
+    #[case::string_value_at_limit(identity("id", "k", json!("v".repeat(2000))))]
+    #[case::number_value_is_unlimited(identity("id", "k", json!(1)))]
+    #[case::bool_value_is_unlimited(identity("id", "k", json!(true)))]
+    #[case::null_value_is_unlimited(identity("id", "k", Value::Null))]
+    fn test_validate_accepts_values_at_limits(#[case] identity: IdentityWithTraits) {
+        // When
+        let result = identity.validate();
+
+        // Then
+        assert!(result.is_ok());
+    }
+
+    #[rstest]
+    #[case::identifier_too_long(
+        identity(&"i".repeat(2001), "k", json!("v")),
+        "identifier: must be at most 2000 characters"
+    )]
+    #[case::trait_key_too_long(
+        identity("id", &"k".repeat(201), json!("v")),
+        "traits[0].trait_key: must be at most 200 characters"
+    )]
+    #[case::string_value_too_long(
+        identity("id", "k", json!("v".repeat(2001))),
+        "traits[0].trait_value: must be at most 2000 characters"
+    )]
+    #[case::string_in_list_too_long(
+        identity("id", "k", json!(["v".repeat(2001)])),
+        "traits[0].trait_value: must be at most 2000 characters"
+    )]
+    #[case::string_in_object_too_long(
+        identity("id", "k", json!({"v": "v".repeat(2001)})),
+        "traits[0].trait_value: must be at most 2000 characters"
+    )]
+    fn test_validate_reports_field_over_limit(
+        #[case] identity: IdentityWithTraits,
+        #[case] expected_message: &str,
+    ) {
+        // When
+        let error = crate::error::EdgeProxyError::from(identity.validate().unwrap_err());
+
+        // Then
+        assert_eq!(
+            error.to_string(),
+            format!("validation error: {expected_message}")
+        );
+    }
+
+    #[test]
+    fn test_with_unique_traits_keeps_last_occurrence_of_duplicate_key() {
+        // Given
+        let identity = IdentityWithTraits::with_traits(
+            "id".to_string(),
+            vec![
+                TraitModel {
+                    trait_key: "a".to_string(),
+                    trait_value: json!(1),
+                    transient: false,
+                },
+                TraitModel {
+                    trait_key: "b".to_string(),
+                    trait_value: json!(1),
+                    transient: false,
+                },
+                TraitModel {
+                    trait_key: "a".to_string(),
+                    trait_value: json!(2),
+                    transient: false,
+                },
+            ],
+        );
+
+        // When
+        let unique = identity.with_unique_traits();
+
+        // Then
+        assert_eq!(
+            unique.traits,
+            vec![
+                TraitModel {
+                    trait_key: "b".to_string(),
+                    trait_value: json!(1),
+                    transient: false,
+                },
+                TraitModel {
+                    trait_key: "a".to_string(),
+                    trait_value: json!(2),
+                    transient: false,
+                },
+            ]
+        );
+    }
 
     #[test]
     fn test_identity_with_traits_str() {
@@ -101,14 +249,17 @@ mod tests {
             TraitModel {
                 trait_key: "foo".to_string(),
                 trait_value: json!("bar"),
+                transient: false,
             },
             TraitModel {
                 trait_key: "age".to_string(),
                 trait_value: json!(21),
+                transient: false,
             },
             TraitModel {
                 trait_key: "is_cool".to_string(),
                 trait_value: json!(true),
+                transient: false,
             },
         ];
 
@@ -129,14 +280,17 @@ mod tests {
             TraitModel {
                 trait_key: "foo".to_string(),
                 trait_value: json!("bar"),
+                transient: false,
             },
             TraitModel {
                 trait_key: "age".to_string(),
                 trait_value: json!(21),
+                transient: false,
             },
             TraitModel {
                 trait_key: "is_cool".to_string(),
                 trait_value: json!(true),
+                transient: false,
             },
         ];
 
@@ -153,5 +307,56 @@ mod tests {
 
         // Then
         assert_eq!(actual_hash, expected_hash);
+    }
+
+    #[rstest]
+    #[case::omitted_defaults_to_false(json!({"identifier": "id", "traits": [{"trait_key": "k", "trait_value": "v"}]}), false, false)]
+    #[case::true_is_read(
+        json!({"identifier": "id", "transient": true, "traits": [{"trait_key": "k", "trait_value": "v", "transient": true}]}),
+        true,
+        true
+    )]
+    fn test_deserialize_reads_transient_flags(
+        #[case] payload: Value,
+        #[case] expected_identity_transient: bool,
+        #[case] expected_trait_transient: bool,
+    ) {
+        // When
+        let identity: IdentityWithTraits = serde_json::from_value(payload).unwrap();
+
+        // Then
+        assert_eq!(identity.transient, expected_identity_transient);
+        assert_eq!(identity.traits[0].transient, expected_trait_transient);
+    }
+
+    #[test]
+    fn test_equality_ignores_transient_flags() {
+        // Given
+        let mut transient_identity = identity("id", "k", json!("v"));
+        transient_identity.transient = true;
+        transient_identity.traits[0].transient = true;
+
+        // When
+        let is_equal = transient_identity == identity("id", "k", json!("v"));
+
+        // Then
+        assert!(is_equal);
+    }
+
+    #[test]
+    fn test_serialize_omits_transient_flags() {
+        // Given
+        let mut transient_identity = identity("id", "k", json!("v"));
+        transient_identity.transient = true;
+        transient_identity.traits[0].transient = true;
+
+        // When
+        let serialized = serde_json::to_value(&transient_identity).unwrap();
+
+        // Then
+        assert_eq!(
+            serialized,
+            json!({"identifier": "id", "traits": [{"trait_key": "k", "trait_value": "v"}]})
+        );
     }
 }

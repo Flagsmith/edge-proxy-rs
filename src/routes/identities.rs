@@ -8,6 +8,7 @@ use axum::{
     http::HeaderMap,
 };
 use serde::Deserialize;
+use validator::Validate;
 
 #[derive(Deserialize)]
 pub struct IdentitiesQuery {
@@ -22,6 +23,7 @@ pub async fn get_identities(
     let environment_key = extract_environment_key(&headers)?;
 
     let identity = IdentityWithTraits::new(query.identifier);
+    identity.validate()?;
     let response = service
         .get_identity_response_data(&identity, &environment_key)
         .await?;
@@ -35,6 +37,8 @@ pub async fn post_identities(
     Json(identity): Json<IdentityWithTraits>,
 ) -> Result<Json<IdentityResponse>> {
     let environment_key = extract_environment_key(&headers)?;
+    identity.validate()?;
+    let identity = identity.with_unique_traits();
 
     let response = service
         .get_identity_response_data(&identity, &environment_key)
