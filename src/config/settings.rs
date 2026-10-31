@@ -221,7 +221,7 @@ where
 
 fn apply_env_overrides(
     mut config: Value,
-    env: impl IntoIterator<Item = (String, String)>,
+    env_vars: impl IntoIterator<Item = (String, String)>,
 ) -> Result<Value> {
     let defaults = serde_json::to_value(AppSettings::default())?;
     let Value::Object(fields) = &mut config else {
@@ -230,7 +230,7 @@ fn apply_env_overrides(
         ));
     };
 
-    for (name, raw) in env {
+    for (name, raw) in env_vars {
         let key = name.to_lowercase();
         // Compose passes `VAR: ${VAR}` through as empty when unset on the host
         if raw.is_empty() || defaults.get(&key).is_none() {
@@ -253,9 +253,9 @@ pub fn get_settings() -> Result<(AppSettings, Option<String>)> {
     };
 
     // vars() panics on non-UTF-8 entries, even ones unrelated to the proxy
-    let env = std::env::vars_os()
+    let string_env_vars = std::env::vars_os()
         .filter_map(|(name, value)| Some((name.into_string().ok()?, value.into_string().ok()?)));
-    let config = apply_env_overrides(file_config, env)?;
+    let config = apply_env_overrides(file_config, string_env_vars)?;
     Ok((AppSettings::from_value(config)?, missing_config_file_path))
 }
 
