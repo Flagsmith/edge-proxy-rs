@@ -301,7 +301,7 @@ async fn test_get_environment_document_client_key_rejected() {
     "traits[1].trait_value: must be at most 2000 characters"
 )]
 #[tokio::test]
-async fn test_post_identities_over_limit_returns_400(
+async fn test_post_identities_returns_400_naming_field_over_limit(
     #[case] identity_data: serde_json::Value,
     #[case] message: &str,
 ) {
@@ -323,7 +323,7 @@ async fn test_post_identities_over_limit_returns_400(
 }
 
 #[tokio::test]
-async fn test_get_identities_identifier_too_long_returns_400() {
+async fn test_get_identities_returns_400_when_identifier_too_long() {
     // Given
     let server = setup_test_server().await;
 
@@ -347,7 +347,7 @@ async fn test_get_identities_identifier_too_long_returns_400() {
 }
 
 #[tokio::test]
-async fn test_post_identities_duplicate_trait_key_uses_last_value() {
+async fn test_post_identities_keeps_last_value_of_duplicate_trait_key() {
     // Given
     let server = setup_test_server().await;
     let identity_data = json!({
