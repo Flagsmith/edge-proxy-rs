@@ -110,7 +110,7 @@ fn feature_2_value(body: &Value) -> &Value {
 #[case::segment_match("test", "segment_override")]
 #[case::segment_miss("other", "2.3")]
 #[tokio::test]
-async fn test_identity_without_store_evaluates_and_returns_request_traits(
+async fn test_post_identities_without_store_uses_request_traits(
     #[case] first_name: &str,
     #[case] expected_feature_2_value: &str,
 ) {
@@ -127,15 +127,15 @@ async fn test_identity_without_store_evaluates_and_returns_request_traits(
 }
 
 #[rstest]
-#[case::loaded_trait_matches_segment(vec![trait_model("first_name", "test")], vec![], "segment_override")]
-#[case::loaded_trait_misses_segment(vec![trait_model("first_name", "other")], vec![], "2.3")]
-#[case::system_trait_wins_over_loaded_trait(
+#[case::trait_matches_segment(vec![trait_model("first_name", "test")], vec![], "segment_override")]
+#[case::trait_misses_segment(vec![trait_model("first_name", "other")], vec![], "2.3")]
+#[case::system_trait_overrides_trait(
     vec![trait_model("first_name", "other")],
     vec![trait_model("first_name", "test")],
     "segment_override"
 )]
 #[tokio::test]
-async fn test_identity_with_store_evaluates_loaded_and_system_traits(
+async fn test_post_identities_with_store_evaluates_store_traits_not_request_traits(
     #[case] traits: Vec<TraitModel>,
     #[case] system_traits: Vec<TraitModel>,
     #[case] expected_feature_2_value: &str,
@@ -157,7 +157,7 @@ async fn test_identity_with_store_evaluates_loaded_and_system_traits(
 }
 
 #[tokio::test]
-async fn test_identity_with_store_returns_loaded_traits_without_system_traits() {
+async fn test_post_identities_with_store_returns_traits_not_request_or_system_traits() {
     // Given
     let identity_store = Arc::new(RecordingIdentityStore::new(
         vec![trait_model("stored_key", "stored_value")],
@@ -184,7 +184,7 @@ async fn test_identity_with_store_returns_loaded_traits_without_system_traits() 
 #[case::client_key(environment_1_api_key(), EnvironmentKeyType::Client)]
 #[case::server_key(environment_1_server_key(), EnvironmentKeyType::Server)]
 #[tokio::test]
-async fn test_identity_with_store_saves_once_with_key_type(
+async fn test_post_identities_with_store_saves_traits_once_with_key_type(
     #[case] environment_key: String,
     #[case] expected_key_type: EnvironmentKeyType,
 ) {
