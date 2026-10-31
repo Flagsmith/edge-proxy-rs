@@ -6,6 +6,7 @@ pub mod health;
 pub mod identities;
 
 use crate::config::AppSettings;
+use crate::identities::IdentityPersistence;
 use crate::services::EnvironmentService;
 use axum::{
     Router,
@@ -15,9 +16,16 @@ use axum::{
 use std::sync::Arc;
 use tower_http::{compression::CompressionLayer, normalize_path::NormalizePath, trace::TraceLayer};
 
-pub fn create_router(settings: AppSettings) -> (Router, Arc<EnvironmentService>) {
+pub fn create_router(
+    settings: AppSettings,
+    persistence: Option<Arc<dyn IdentityPersistence>>,
+) -> (Router, Arc<EnvironmentService>) {
     let cors = cors::layer(&settings.allow_origins);
-    let environment_service = Arc::new(EnvironmentService::new(settings));
+    let environment_service = EnvironmentService::new(settings);
+    let environment_service = Arc::new(match persistence {
+        Some(persistence) => environment_service.with_identity_persistence(persistence),
+        None => environment_service,
+    });
 
     let router = Router::new()
         // Health check routes

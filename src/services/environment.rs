@@ -2,8 +2,9 @@ use crate::cache::{EnvironmentsCache, LocalMemEnvironmentsCache};
 use crate::config::settings::AppSettings;
 use crate::environments::{EnvironmentIndex, EnvironmentKeys};
 use crate::error::{EdgeProxyError, Result};
+use crate::identities::{IdentityPersistence, RequestOrigin};
 use crate::models::{
-    APIFeatureState, IdentityResponse, IdentityWithTraits, ProxyConfigEnvironment,
+    APIFeatureState, IdentityResponse, IdentityWithTraits, ProxyConfigEnvironment, TraitModel,
 };
 use crate::services::feature_utils::filter_out_server_key_only_flag_results;
 use chrono::{DateTime, Utc};
@@ -23,6 +24,7 @@ pub struct EnvironmentService {
     pub settings: AppSettings,
     pub last_updated_at: Arc<RwLock<Option<DateTime<Utc>>>>,
     environments: EnvironmentIndex,
+    persistence: Option<Arc<dyn IdentityPersistence>>,
 }
 
 impl EnvironmentService {
@@ -41,6 +43,7 @@ impl EnvironmentService {
             settings,
             last_updated_at: Arc::new(RwLock::new(None)),
             environments,
+            persistence: None,
         }
     }
 
@@ -48,6 +51,11 @@ impl EnvironmentService {
         let mut service = Self::new(settings);
         service.cache = cache;
         service
+    }
+
+    pub fn with_identity_persistence(mut self, persistence: Arc<dyn IdentityPersistence>) -> Self {
+        self.persistence = Some(persistence);
+        self
     }
 
     pub async fn refresh_environment_caches(&self) -> bool {
@@ -342,6 +350,54 @@ impl EnvironmentService {
     ) -> Result<IdentityResponse> {
         let keys = self.resolve_key(environment_key)?;
 
+        let Some(persistence) = &self.persistence else {
+            return self
+                .evaluate_identity(
+                    &keys,
+                    environment_key,
+                    &identity.identifier,
+                    &identity.traits,
+                    &identity.traits,
+                )
+                .await;
+        };
+
+        let environment = self
+            .cache
+            .get_environment(&keys.client_key)
+            .await
+            .ok_or_else(|| {
+                EdgeProxyError::ServiceUnavailable("Environment not loaded".to_string())
+            })?;
+        let traits = persistence.load(&environment, identity).await;
+        let response = self
+            .evaluate_identity(
+                &keys,
+                environment_key,
+                &identity.identifier,
+                &traits.evaluation,
+                &traits.response,
+            )
+            .await?;
+
+        let origin = if environment_key == keys.client_key {
+            RequestOrigin::Client
+        } else {
+            RequestOrigin::Server
+        };
+        persistence.persist(&environment, identity, origin);
+
+        Ok(response)
+    }
+
+    async fn evaluate_identity(
+        &self,
+        keys: &EnvironmentKeys,
+        environment_key: &str,
+        identifier: &str,
+        evaluation_traits: &[TraitModel],
+        response_traits: &[TraitModel],
+    ) -> Result<IdentityResponse> {
         // Get pre-computed context from cache
         let context = self
             .cache
@@ -352,10 +408,10 @@ impl EnvironmentService {
             })?;
 
         let flagsmith_traits: Vec<FlagsmithTrait> =
-            identity.traits.iter().map(Into::into).collect();
+            evaluation_traits.iter().map(Into::into).collect();
 
         let context_with_identity =
-            add_identity_to_context(&context, &identity.identifier, &flagsmith_traits);
+            add_identity_to_context(&context, identifier, &flagsmith_traits);
 
         let evaluation_result = get_evaluation_result(&context_with_identity);
 
@@ -373,8 +429,7 @@ impl EnvironmentService {
 
         Ok(IdentityResponse {
             flags: flag_results.iter().map(Into::into).collect(),
-            traits: identity
-                .traits
+            traits: response_traits
                 .iter()
                 .map(|t| t.to_response_json())
                 .collect(),

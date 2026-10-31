@@ -17,7 +17,7 @@ async fn setup_test_server() -> TestServer {
         ..AppSettings::new()
     };
 
-    let (app, service) = create_router(settings);
+    let (app, service) = create_router(settings, None);
 
     service
         .cache
@@ -238,7 +238,7 @@ async fn test_get_environment_document() {
         }],
         ..AppSettings::new()
     };
-    let (app, service) = create_router(settings);
+    let (app, service) = create_router(settings, None);
     service
         .cache
         .put_environment("client_key", environment_1())
