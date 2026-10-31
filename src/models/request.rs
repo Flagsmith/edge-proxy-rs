@@ -16,6 +16,8 @@ pub struct TraitModel {
     pub trait_key: String,
     #[validate(custom(function = "validate_trait_value"))]
     pub trait_value: Value,
+    #[serde(default, skip_serializing)]
+    pub transient: bool,
 }
 
 // Core stores strings, lists and objects in a varchar(2000) column.
@@ -59,6 +61,8 @@ pub struct IdentityWithTraits {
     #[serde(default)]
     #[validate(nested)]
     pub traits: Vec<TraitModel>,
+    #[serde(default, skip_serializing)]
+    pub transient: bool,
 }
 
 impl IdentityWithTraits {
@@ -66,11 +70,16 @@ impl IdentityWithTraits {
         Self {
             identifier,
             traits: Vec::new(),
+            transient: false,
         }
     }
 
     pub fn with_traits(identifier: String, traits: Vec<TraitModel>) -> Self {
-        Self { identifier, traits }
+        Self {
+            identifier,
+            traits,
+            transient: false,
+        }
     }
 
     pub fn with_unique_traits(mut self) -> Self {
@@ -132,6 +141,7 @@ mod tests {
             vec![TraitModel {
                 trait_key: trait_key.to_string(),
                 trait_value,
+                transient: false,
             }],
         )
     }
@@ -191,14 +201,17 @@ mod tests {
                 TraitModel {
                     trait_key: "a".to_string(),
                     trait_value: json!(1),
+                    transient: false,
                 },
                 TraitModel {
                     trait_key: "b".to_string(),
                     trait_value: json!(1),
+                    transient: false,
                 },
                 TraitModel {
                     trait_key: "a".to_string(),
                     trait_value: json!(2),
+                    transient: false,
                 },
             ],
         );
@@ -212,11 +225,13 @@ mod tests {
             vec![
                 TraitModel {
                     trait_key: "b".to_string(),
-                    trait_value: json!(1)
+                    trait_value: json!(1),
+                    transient: false,
                 },
                 TraitModel {
                     trait_key: "a".to_string(),
-                    trait_value: json!(2)
+                    trait_value: json!(2),
+                    transient: false,
                 },
             ]
         );
@@ -230,14 +245,17 @@ mod tests {
             TraitModel {
                 trait_key: "foo".to_string(),
                 trait_value: json!("bar"),
+                transient: false,
             },
             TraitModel {
                 trait_key: "age".to_string(),
                 trait_value: json!(21),
+                transient: false,
             },
             TraitModel {
                 trait_key: "is_cool".to_string(),
                 trait_value: json!(true),
+                transient: false,
             },
         ];
 
@@ -258,14 +276,17 @@ mod tests {
             TraitModel {
                 trait_key: "foo".to_string(),
                 trait_value: json!("bar"),
+                transient: false,
             },
             TraitModel {
                 trait_key: "age".to_string(),
                 trait_value: json!(21),
+                transient: false,
             },
             TraitModel {
                 trait_key: "is_cool".to_string(),
                 trait_value: json!(true),
+                transient: false,
             },
         ];
 
@@ -282,5 +303,43 @@ mod tests {
 
         // Then
         assert_eq!(actual_hash, expected_hash);
+    }
+
+    #[rstest]
+    #[case::omitted(json!({"identifier": "id", "traits": [{"trait_key": "k", "trait_value": "v"}]}), false, false)]
+    #[case::set(
+        json!({"identifier": "id", "transient": true, "traits": [{"trait_key": "k", "trait_value": "v", "transient": true}]}),
+        true,
+        true
+    )]
+    fn test_deserialize_transient(
+        #[case] payload: Value,
+        #[case] expected_identity_transient: bool,
+        #[case] expected_trait_transient: bool,
+    ) {
+        // When
+        let identity: IdentityWithTraits = serde_json::from_value(payload).unwrap();
+
+        // Then
+        assert_eq!(identity.transient, expected_identity_transient);
+        assert_eq!(identity.traits[0].transient, expected_trait_transient);
+    }
+
+    #[test]
+    fn test_transient_excluded_from_identity_key_and_serialization() {
+        // Given
+        let mut transient_identity = identity("id", "k", json!("v"));
+        transient_identity.transient = true;
+        transient_identity.traits[0].transient = true;
+
+        // When
+        let serialized = serde_json::to_value(&transient_identity).unwrap();
+
+        // Then
+        assert_eq!(transient_identity, identity("id", "k", json!("v")));
+        assert_eq!(
+            serialized,
+            json!({"identifier": "id", "traits": [{"trait_key": "k", "trait_value": "v"}]})
+        );
     }
 }
