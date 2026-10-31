@@ -357,7 +357,7 @@ impl EnvironmentService {
                     environment_key,
                     &identity.identifier,
                     &identity.traits,
-                    &identity.traits,
+                    &[],
                 )
                 .await;
         };
@@ -375,8 +375,8 @@ impl EnvironmentService {
                 &keys,
                 environment_key,
                 &identity.identifier,
-                &traits.evaluation,
-                &traits.response,
+                &traits.traits,
+                &traits.system_traits,
             )
             .await?;
 
@@ -395,8 +395,8 @@ impl EnvironmentService {
         keys: &EnvironmentKeys,
         environment_key: &str,
         identifier: &str,
-        evaluation_traits: &[TraitModel],
-        response_traits: &[TraitModel],
+        traits: &[TraitModel],
+        system_traits: &[TraitModel],
     ) -> Result<IdentityResponse> {
         // Get pre-computed context from cache
         let context = self
@@ -407,8 +407,12 @@ impl EnvironmentService {
                 EdgeProxyError::ServiceUnavailable("Environment not loaded".to_string())
             })?;
 
-        let flagsmith_traits: Vec<FlagsmithTrait> =
-            evaluation_traits.iter().map(Into::into).collect();
+        let flagsmith_traits: Vec<FlagsmithTrait> = traits
+            .iter()
+            .filter(|t| !system_traits.iter().any(|s| s.trait_key == t.trait_key))
+            .chain(system_traits)
+            .map(Into::into)
+            .collect();
 
         let context_with_identity =
             add_identity_to_context(&context, identifier, &flagsmith_traits);
@@ -429,10 +433,7 @@ impl EnvironmentService {
 
         Ok(IdentityResponse {
             flags: flag_results.iter().map(Into::into).collect(),
-            traits: response_traits
-                .iter()
-                .map(|t| t.to_response_json())
-                .collect(),
+            traits: traits.iter().map(|t| t.to_response_json()).collect(),
         })
     }
 

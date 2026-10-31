@@ -19,8 +19,8 @@ pub trait IdentityStore: Send + Sync {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IdentityTraits {
-    pub evaluation: Vec<TraitModel>,
-    pub response: Vec<TraitModel>,
+    pub traits: Vec<TraitModel>,
+    pub system_traits: Vec<TraitModel>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

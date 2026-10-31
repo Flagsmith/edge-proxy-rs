@@ -24,11 +24,11 @@ struct RecordingIdentityStore {
 }
 
 impl RecordingIdentityStore {
-    fn new(evaluation: Vec<TraitModel>, response: Vec<TraitModel>) -> Self {
+    fn new(traits: Vec<TraitModel>, system_traits: Vec<TraitModel>) -> Self {
         Self {
             traits: IdentityTraits {
-                evaluation,
-                response,
+                traits,
+                system_traits,
             },
             save_calls: Mutex::new(Vec::new()),
         }
@@ -127,26 +127,28 @@ async fn test_identity_without_store_evaluates_and_returns_request_traits(
 }
 
 #[rstest]
-#[case::loaded_traits_match_segment("other", "test", "segment_override")]
-#[case::request_traits_ignored("test", "other", "2.3")]
+#[case::loaded_trait_matches_segment(vec![trait_model("first_name", "test")], vec![], "segment_override")]
+#[case::loaded_trait_misses_segment(vec![trait_model("first_name", "other")], vec![], "2.3")]
+#[case::system_trait_wins_over_loaded_trait(
+    vec![trait_model("first_name", "other")],
+    vec![trait_model("first_name", "test")],
+    "segment_override"
+)]
 #[tokio::test]
-async fn test_identity_with_store_evaluates_loaded_traits(
-    #[case] request_first_name: &str,
-    #[case] loaded_first_name: &str,
+async fn test_identity_with_store_evaluates_loaded_and_system_traits(
+    #[case] traits: Vec<TraitModel>,
+    #[case] system_traits: Vec<TraitModel>,
     #[case] expected_feature_2_value: &str,
 ) {
     // Given
-    let identity_store = Arc::new(RecordingIdentityStore::new(
-        vec![trait_model("first_name", loaded_first_name)],
-        Vec::new(),
-    ));
+    let identity_store = Arc::new(RecordingIdentityStore::new(traits, system_traits));
     let server = setup_test_server(Some(identity_store)).await;
 
     // When
     let body = post_identity(
         &server,
         &environment_1_api_key(),
-        json!([{"trait_key": "first_name", "trait_value": request_first_name}]),
+        json!([{"trait_key": "first_name", "trait_value": "ignored"}]),
     )
     .await;
 
@@ -155,11 +157,11 @@ async fn test_identity_with_store_evaluates_loaded_traits(
 }
 
 #[tokio::test]
-async fn test_identity_with_store_returns_loaded_response_traits() {
+async fn test_identity_with_store_returns_loaded_traits_without_system_traits() {
     // Given
     let identity_store = Arc::new(RecordingIdentityStore::new(
-        Vec::new(),
         vec![trait_model("stored_key", "stored_value")],
+        vec![trait_model("system_key", "system_value")],
     ));
     let server = setup_test_server(Some(identity_store)).await;
 
