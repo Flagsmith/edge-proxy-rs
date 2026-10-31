@@ -5,6 +5,7 @@ use chrono::{DateTime, Utc};
 use parking_lot::RwLock;
 
 use crate::config::settings::EnvironmentKeyPair;
+use crate::identities::EnvironmentKeyType;
 
 /// A server-side (`ser.`) key together with the validity metadata the
 /// proxy config endpoint reports. Statically configured keys carry no
@@ -32,6 +33,14 @@ pub struct EnvironmentKeys {
 }
 
 impl EnvironmentKeys {
+    pub fn key_type(&self, environment_key: &str) -> EnvironmentKeyType {
+        if environment_key == self.client_key {
+            EnvironmentKeyType::Client
+        } else {
+            EnvironmentKeyType::Server
+        }
+    }
+
     /// The first server-side key still usable for upstream fetches.
     pub fn valid_server_key(&self) -> Option<&ServerKey> {
         self.server_keys.iter().find(|key| key.is_valid())

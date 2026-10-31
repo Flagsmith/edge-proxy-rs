@@ -2,7 +2,7 @@ use crate::cache::{EnvironmentsCache, LocalMemEnvironmentsCache};
 use crate::config::settings::AppSettings;
 use crate::environments::{EnvironmentIndex, EnvironmentKeys};
 use crate::error::{EdgeProxyError, Result};
-use crate::identities::{EnvironmentKeyType, IdentityStore};
+use crate::identities::IdentityStore;
 use crate::models::{
     APIFeatureState, IdentityResponse, IdentityWithTraits, ProxyConfigEnvironment, TraitModel,
 };
@@ -349,19 +349,36 @@ impl EnvironmentService {
         environment_key: &str,
     ) -> Result<IdentityResponse> {
         let keys = self.resolve_key(environment_key)?;
-
-        let Some(identity_store) = &self.identity_store else {
-            return self
-                .evaluate_identity(
+        match &self.identity_store {
+            None => {
+                self.evaluate_identity(
                     &keys,
                     environment_key,
                     &identity.identifier,
                     &identity.traits,
                     &[],
                 )
-                .await;
-        };
+                .await
+            }
+            Some(identity_store) => {
+                self.evaluate_with_identity_store(
+                    identity_store.as_ref(),
+                    &keys,
+                    environment_key,
+                    identity,
+                )
+                .await
+            }
+        }
+    }
 
+    async fn evaluate_with_identity_store(
+        &self,
+        identity_store: &dyn IdentityStore,
+        keys: &EnvironmentKeys,
+        environment_key: &str,
+        identity: &IdentityWithTraits,
+    ) -> Result<IdentityResponse> {
         let environment = self
             .cache
             .get_environment(&keys.client_key)
@@ -372,21 +389,14 @@ impl EnvironmentService {
         let traits = identity_store.load_traits(&environment, identity).await;
         let response = self
             .evaluate_identity(
-                &keys,
+                keys,
                 environment_key,
                 &identity.identifier,
                 &traits.traits,
                 &traits.system_traits,
             )
             .await?;
-
-        let key_type = if environment_key == keys.client_key {
-            EnvironmentKeyType::Client
-        } else {
-            EnvironmentKeyType::Server
-        };
-        identity_store.save_traits(&environment, identity, key_type);
-
+        identity_store.save_traits(&environment, identity, keys.key_type(environment_key));
         Ok(response)
     }
 
