@@ -150,11 +150,15 @@ mod tests {
     #[case::identifier_at_limit(identity(&"i".repeat(2000), "k", json!("v")))]
     #[case::trait_key_at_limit(identity("id", &"k".repeat(200), json!("v")))]
     #[case::string_value_at_limit(identity("id", "k", json!("v".repeat(2000))))]
-    #[case::number_value(identity("id", "k", json!(1)))]
-    #[case::bool_value(identity("id", "k", json!(true)))]
-    #[case::null_value(identity("id", "k", Value::Null))]
-    fn test_validate_within_limits_is_ok(#[case] identity: IdentityWithTraits) {
-        assert!(identity.validate().is_ok());
+    #[case::number_value_is_unlimited(identity("id", "k", json!(1)))]
+    #[case::bool_value_is_unlimited(identity("id", "k", json!(true)))]
+    #[case::null_value_is_unlimited(identity("id", "k", Value::Null))]
+    fn test_validate_accepts_values_at_limits(#[case] identity: IdentityWithTraits) {
+        // When
+        let result = identity.validate();
+
+        // Then
+        assert!(result.is_ok());
     }
 
     #[rstest]
@@ -170,15 +174,15 @@ mod tests {
         identity("id", "k", json!("v".repeat(2001))),
         "traits[0].trait_value: must be at most 2000 characters"
     )]
-    #[case::list_value_too_long(
+    #[case::string_in_list_too_long(
         identity("id", "k", json!(["v".repeat(2001)])),
         "traits[0].trait_value: must be at most 2000 characters"
     )]
-    #[case::object_value_too_long(
+    #[case::string_in_object_too_long(
         identity("id", "k", json!({"v": "v".repeat(2001)})),
         "traits[0].trait_value: must be at most 2000 characters"
     )]
-    fn test_validate_over_limit_reports_the_field(
+    fn test_validate_reports_field_over_limit(
         #[case] identity: IdentityWithTraits,
         #[case] expected_message: &str,
     ) {
@@ -193,7 +197,7 @@ mod tests {
     }
 
     #[test]
-    fn test_with_unique_traits_duplicate_keys_keeps_last_value() {
+    fn test_with_unique_traits_keeps_last_occurrence_of_duplicate_key() {
         // Given
         let identity = IdentityWithTraits::with_traits(
             "id".to_string(),
@@ -306,13 +310,13 @@ mod tests {
     }
 
     #[rstest]
-    #[case::omitted(json!({"identifier": "id", "traits": [{"trait_key": "k", "trait_value": "v"}]}), false, false)]
-    #[case::set(
+    #[case::omitted_defaults_to_false(json!({"identifier": "id", "traits": [{"trait_key": "k", "trait_value": "v"}]}), false, false)]
+    #[case::true_is_read(
         json!({"identifier": "id", "transient": true, "traits": [{"trait_key": "k", "trait_value": "v", "transient": true}]}),
         true,
         true
     )]
-    fn test_deserialize_transient(
+    fn test_deserialize_reads_transient_flags(
         #[case] payload: Value,
         #[case] expected_identity_transient: bool,
         #[case] expected_trait_transient: bool,
@@ -326,7 +330,21 @@ mod tests {
     }
 
     #[test]
-    fn test_transient_excluded_from_identity_key_and_serialization() {
+    fn test_equality_ignores_transient_flags() {
+        // Given
+        let mut transient_identity = identity("id", "k", json!("v"));
+        transient_identity.transient = true;
+        transient_identity.traits[0].transient = true;
+
+        // When
+        let is_equal = transient_identity == identity("id", "k", json!("v"));
+
+        // Then
+        assert!(is_equal);
+    }
+
+    #[test]
+    fn test_serialize_omits_transient_flags() {
         // Given
         let mut transient_identity = identity("id", "k", json!("v"));
         transient_identity.transient = true;
@@ -336,7 +354,6 @@ mod tests {
         let serialized = serde_json::to_value(&transient_identity).unwrap();
 
         // Then
-        assert_eq!(transient_identity, identity("id", "k", json!("v")));
         assert_eq!(
             serialized,
             json!({"identifier": "id", "traits": [{"trait_key": "k", "trait_value": "v"}]})
