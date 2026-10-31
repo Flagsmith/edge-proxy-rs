@@ -4,7 +4,6 @@ use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Map, Value};
 use std::fs;
 use std::io;
-use std::path::PathBuf;
 use validator::Validate;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Validate)]
@@ -192,7 +191,7 @@ impl AppSettings {
     }
 }
 
-fn read_config_file(path: &PathBuf) -> Result<Option<Value>> {
+fn read_config_file(path: &str) -> Result<Option<Value>> {
     let config_str = match fs::read_to_string(path) {
         Ok(config_str) => config_str,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
@@ -243,9 +242,9 @@ fn apply_env_overrides(
     Ok(config)
 }
 
-pub fn get_settings() -> Result<(AppSettings, Option<PathBuf>)> {
+pub fn get_settings() -> Result<(AppSettings, Option<String>)> {
     let config_file_path =
-        PathBuf::from(std::env::var("CONFIG_PATH").unwrap_or_else(|_| "./config.json".to_string()));
+        std::env::var("CONFIG_PATH").unwrap_or_else(|_| "./config.json".to_string());
 
     let (file_config, missing_config_file_path) = match read_config_file(&config_file_path)? {
         Some(file_config) => (file_config, None),
@@ -297,10 +296,10 @@ mod tests {
     #[test]
     fn test_missing_config_file_reads_as_none() {
         // Given
-        let path = PathBuf::from("/nonexistent/config.json");
+        let path = "/nonexistent/config.json";
 
         // When
-        let config = read_config_file(&path).unwrap();
+        let config = read_config_file(path).unwrap();
 
         // Then
         assert!(config.is_none());

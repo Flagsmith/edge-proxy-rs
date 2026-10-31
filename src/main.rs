@@ -13,7 +13,7 @@ async fn main() -> anyhow::Result<()> {
     setup_logging(&settings.logging);
 
     if let Some(path) = missing_config_file_path {
-        info!("Configuration file at {} not found", path.display());
+        info!("Configuration file at {} not found", path);
     }
 
     info!("Starting Edge Proxy server...");
