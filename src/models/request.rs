@@ -1,14 +1,36 @@
 use flagsmith_flag_engine::identities::Trait as FlagsmithTrait;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{Value, json};
+use std::collections::HashSet;
 use std::fmt;
 use std::hash::{Hash, Hasher};
-use validator::Validate;
+use validator::{Validate, ValidationError};
+
+pub const TRAIT_KEY_MAX_LENGTH: u64 = 200;
+pub const TRAIT_VALUE_MAX_LENGTH: u64 = 2000;
+pub const IDENTIFIER_MAX_LENGTH: u64 = 2000;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Validate, PartialEq, Eq)]
 pub struct TraitModel {
+    #[validate(length(max = TRAIT_KEY_MAX_LENGTH, message = "must be at most 200 characters"))]
     pub trait_key: String,
-    pub trait_value: serde_json::Value,
+    #[validate(custom(function = "validate_trait_value"))]
+    pub trait_value: Value,
+}
+
+// Core stores strings, lists and objects in a varchar(2000) column.
+fn validate_trait_value(value: &Value) -> Result<(), ValidationError> {
+    let length = match value {
+        Value::String(s) => s.chars().count(),
+        Value::Array(_) | Value::Object(_) => value.to_string().chars().count(),
+        _ => return Ok(()),
+    };
+    if length as u64 > TRAIT_VALUE_MAX_LENGTH {
+        return Err(
+            ValidationError::new("length").with_message("must be at most 2000 characters".into())
+        );
+    }
+    Ok(())
 }
 
 impl TraitModel {
@@ -32,8 +54,10 @@ impl From<&TraitModel> for FlagsmithTrait {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Validate)]
 pub struct IdentityWithTraits {
+    #[validate(length(max = IDENTIFIER_MAX_LENGTH, message = "must be at most 2000 characters"))]
     pub identifier: String,
     #[serde(default)]
+    #[validate(nested)]
     pub traits: Vec<TraitModel>,
 }
 
@@ -47,6 +71,14 @@ impl IdentityWithTraits {
 
     pub fn with_traits(identifier: String, traits: Vec<TraitModel>) -> Self {
         Self { identifier, traits }
+    }
+
+    pub fn with_unique_traits(mut self) -> Self {
+        let mut seen = HashSet::new();
+        self.traits.reverse();
+        self.traits.retain(|t| seen.insert(t.trait_key.clone()));
+        self.traits.reverse();
+        self
     }
 }
 
@@ -90,8 +122,105 @@ impl Eq for IdentityWithTraits {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rstest::rstest;
     use serde_json::json;
     use std::collections::hash_map::DefaultHasher;
+
+    fn identity(identifier: &str, trait_key: &str, trait_value: Value) -> IdentityWithTraits {
+        IdentityWithTraits::with_traits(
+            identifier.to_string(),
+            vec![TraitModel {
+                trait_key: trait_key.to_string(),
+                trait_value,
+            }],
+        )
+    }
+
+    #[rstest]
+    #[case::identifier_at_limit(identity(&"i".repeat(2000), "k", json!("v")))]
+    #[case::trait_key_at_limit(identity("id", &"k".repeat(200), json!("v")))]
+    #[case::string_value_at_limit(identity("id", "k", json!("v".repeat(2000))))]
+    #[case::number_value(identity("id", "k", json!(1)))]
+    #[case::bool_value(identity("id", "k", json!(true)))]
+    #[case::null_value(identity("id", "k", Value::Null))]
+    fn test_validate_within_limits_is_ok(#[case] identity: IdentityWithTraits) {
+        assert!(identity.validate().is_ok());
+    }
+
+    #[rstest]
+    #[case::identifier_too_long(
+        identity(&"i".repeat(2001), "k", json!("v")),
+        "identifier: must be at most 2000 characters"
+    )]
+    #[case::trait_key_too_long(
+        identity("id", &"k".repeat(201), json!("v")),
+        "traits[0].trait_key: must be at most 200 characters"
+    )]
+    #[case::string_value_too_long(
+        identity("id", "k", json!("v".repeat(2001))),
+        "traits[0].trait_value: must be at most 2000 characters"
+    )]
+    #[case::list_value_too_long(
+        identity("id", "k", json!(["v".repeat(2001)])),
+        "traits[0].trait_value: must be at most 2000 characters"
+    )]
+    #[case::object_value_too_long(
+        identity("id", "k", json!({"v": "v".repeat(2001)})),
+        "traits[0].trait_value: must be at most 2000 characters"
+    )]
+    fn test_validate_over_limit_reports_the_field(
+        #[case] identity: IdentityWithTraits,
+        #[case] expected_message: &str,
+    ) {
+        // When
+        let error = crate::error::EdgeProxyError::from(identity.validate().unwrap_err());
+
+        // Then
+        assert_eq!(
+            error.to_string(),
+            format!("validation error: {expected_message}")
+        );
+    }
+
+    #[test]
+    fn test_with_unique_traits_duplicate_keys_keeps_last_value() {
+        // Given
+        let identity = IdentityWithTraits::with_traits(
+            "id".to_string(),
+            vec![
+                TraitModel {
+                    trait_key: "a".to_string(),
+                    trait_value: json!(1),
+                },
+                TraitModel {
+                    trait_key: "b".to_string(),
+                    trait_value: json!(1),
+                },
+                TraitModel {
+                    trait_key: "a".to_string(),
+                    trait_value: json!(2),
+                },
+            ],
+        );
+
+        // When
+        let unique = identity.with_unique_traits();
+
+        // Then
+        assert_eq!(
+            unique.traits,
+            vec![
+                TraitModel {
+                    trait_key: "b".to_string(),
+                    trait_value: json!(1)
+                },
+                TraitModel {
+                    trait_key: "a".to_string(),
+                    trait_value: json!(2)
+                },
+            ]
+        );
+    }
 
     #[test]
     fn test_identity_with_traits_str() {

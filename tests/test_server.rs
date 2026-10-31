@@ -283,3 +283,93 @@ async fn test_get_environment_document_client_key_rejected() {
     // Then
     response.assert_status(axum::http::StatusCode::UNAUTHORIZED);
 }
+
+#[rstest]
+#[case::identifier_too_long(
+    json!({"identifier": "i".repeat(2001), "traits": []}),
+    "identifier: must be at most 2000 characters"
+)]
+#[case::trait_key_too_long(
+    json!({"identifier": "id", "traits": [{"trait_key": "k".repeat(201), "trait_value": "v"}]}),
+    "traits[0].trait_key: must be at most 200 characters"
+)]
+#[case::second_trait_value_too_long(
+    json!({"identifier": "id", "traits": [
+        {"trait_key": "ok", "trait_value": "v"},
+        {"trait_key": "k", "trait_value": "v".repeat(2001)}
+    ]}),
+    "traits[1].trait_value: must be at most 2000 characters"
+)]
+#[tokio::test]
+async fn test_post_identities_over_limit_returns_400(
+    #[case] identity_data: serde_json::Value,
+    #[case] message: &str,
+) {
+    // Given
+    let server = setup_test_server().await;
+
+    // When
+    let response = server
+        .post("/api/v1/identities/")
+        .add_header("X-Environment-Key", &environment_1_api_key())
+        .json(&identity_data)
+        .await;
+
+    // Then
+    response.assert_status(axum::http::StatusCode::BAD_REQUEST);
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["status"], "bad_request");
+    assert_eq!(body["message"], message);
+}
+
+#[tokio::test]
+async fn test_get_identities_identifier_too_long_returns_400() {
+    // Given
+    let server = setup_test_server().await;
+
+    // When
+    let response = server
+        .get(&format!(
+            "/api/v1/identities/?identifier={}",
+            "i".repeat(2001)
+        ))
+        .add_header("X-Environment-Key", &environment_1_api_key())
+        .await;
+
+    // Then
+    response.assert_status(axum::http::StatusCode::BAD_REQUEST);
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["status"], "bad_request");
+    assert_eq!(
+        body["message"],
+        "identifier: must be at most 2000 characters"
+    );
+}
+
+#[tokio::test]
+async fn test_post_identities_duplicate_trait_key_uses_last_value() {
+    // Given
+    let server = setup_test_server().await;
+    let identity_data = json!({
+        "identifier": "id",
+        "traits": [
+            {"trait_key": "plan", "trait_value": "free"},
+            {"trait_key": "plan", "trait_value": "pro"}
+        ]
+    });
+
+    // When
+    let response = server
+        .post("/api/v1/identities/")
+        .add_header("X-Environment-Key", &environment_1_api_key())
+        .json(&identity_data)
+        .await;
+
+    // Then
+    response.assert_status_ok();
+    let body: serde_json::Value = response.json();
+    assert_eq!(
+        body["traits"],
+        json!([{"trait_key": "plan", "trait_value": "pro"}])
+    );
+}
