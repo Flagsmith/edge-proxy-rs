@@ -2,8 +2,9 @@ use crate::cache::{EnvironmentsCache, LocalMemEnvironmentsCache};
 use crate::config::settings::AppSettings;
 use crate::environments::{EnvironmentIndex, EnvironmentKeys};
 use crate::error::{EdgeProxyError, Result};
+use crate::identities::IdentityStore;
 use crate::models::{
-    APIFeatureState, IdentityResponse, IdentityWithTraits, ProxyConfigEnvironment,
+    APIFeatureState, IdentityResponse, IdentityWithTraits, ProxyConfigEnvironment, TraitModel,
 };
 use crate::services::feature_utils::filter_out_server_key_only_flag_results;
 use chrono::{DateTime, Utc};
@@ -23,6 +24,7 @@ pub struct EnvironmentService {
     pub settings: AppSettings,
     pub last_updated_at: Arc<RwLock<Option<DateTime<Utc>>>>,
     environments: EnvironmentIndex,
+    identity_store: Option<Arc<dyn IdentityStore>>,
 }
 
 impl EnvironmentService {
@@ -41,6 +43,7 @@ impl EnvironmentService {
             settings,
             last_updated_at: Arc::new(RwLock::new(None)),
             environments,
+            identity_store: None,
         }
     }
 
@@ -48,6 +51,11 @@ impl EnvironmentService {
         let mut service = Self::new(settings);
         service.cache = cache;
         service
+    }
+
+    pub fn with_identity_store(mut self, identity_store: Arc<dyn IdentityStore>) -> Self {
+        self.identity_store = Some(identity_store);
+        self
     }
 
     pub async fn refresh_environment_caches(&self) -> bool {
@@ -341,7 +349,65 @@ impl EnvironmentService {
         environment_key: &str,
     ) -> Result<IdentityResponse> {
         let keys = self.resolve_key(environment_key)?;
+        match &self.identity_store {
+            None => {
+                self.evaluate_identity(
+                    &keys,
+                    environment_key,
+                    &identity.identifier,
+                    &identity.traits,
+                    &[],
+                )
+                .await
+            }
+            Some(identity_store) => {
+                self.evaluate_with_identity_store(
+                    identity_store.as_ref(),
+                    &keys,
+                    environment_key,
+                    identity,
+                )
+                .await
+            }
+        }
+    }
 
+    async fn evaluate_with_identity_store(
+        &self,
+        identity_store: &dyn IdentityStore,
+        keys: &EnvironmentKeys,
+        environment_key: &str,
+        identity: &IdentityWithTraits,
+    ) -> Result<IdentityResponse> {
+        let environment = self
+            .cache
+            .get_environment(&keys.client_key)
+            .await
+            .ok_or_else(|| {
+                EdgeProxyError::ServiceUnavailable("Environment not loaded".to_string())
+            })?;
+        let traits = identity_store.load_traits(&environment, identity).await;
+        let response = self
+            .evaluate_identity(
+                keys,
+                environment_key,
+                &identity.identifier,
+                &traits.traits,
+                &traits.system_traits,
+            )
+            .await?;
+        identity_store.save_traits(&environment, identity, keys.key_type(environment_key));
+        Ok(response)
+    }
+
+    async fn evaluate_identity(
+        &self,
+        keys: &EnvironmentKeys,
+        environment_key: &str,
+        identifier: &str,
+        traits: &[TraitModel],
+        system_traits: &[TraitModel],
+    ) -> Result<IdentityResponse> {
         // Get pre-computed context from cache
         let context = self
             .cache
@@ -351,11 +417,15 @@ impl EnvironmentService {
                 EdgeProxyError::ServiceUnavailable("Environment not loaded".to_string())
             })?;
 
-        let flagsmith_traits: Vec<FlagsmithTrait> =
-            identity.traits.iter().map(Into::into).collect();
+        let flagsmith_traits: Vec<FlagsmithTrait> = traits
+            .iter()
+            .filter(|t| !system_traits.iter().any(|s| s.trait_key == t.trait_key))
+            .chain(system_traits)
+            .map(Into::into)
+            .collect();
 
         let context_with_identity =
-            add_identity_to_context(&context, &identity.identifier, &flagsmith_traits);
+            add_identity_to_context(&context, identifier, &flagsmith_traits);
 
         let evaluation_result = get_evaluation_result(&context_with_identity);
 
@@ -373,11 +443,7 @@ impl EnvironmentService {
 
         Ok(IdentityResponse {
             flags: flag_results.iter().map(Into::into).collect(),
-            traits: identity
-                .traits
-                .iter()
-                .map(|t| t.to_response_json())
-                .collect(),
+            traits: traits.iter().map(|t| t.to_response_json()).collect(),
         })
     }
 

@@ -89,7 +89,7 @@ pub fn environment_1() -> serde_json::Value {
                                         {
                                             "value": "test",
                                             "operator": "EQUAL",
-                                            "property": "first_name",
+                                            "property_": "first_name",
                                         }
                                     ],
                                     "type": "ANY",

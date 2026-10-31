@@ -7,7 +7,7 @@ use edge_proxy::routes::create_router;
 async fn test_liveness_check() {
     // Given
     let settings = AppSettings::new();
-    let (app, _) = create_router(settings);
+    let (app, _) = create_router(settings, None);
     let server = TestServer::new(app).unwrap();
 
     // When
@@ -21,7 +21,7 @@ async fn test_liveness_check() {
 async fn test_health_check_returns_200_if_cache_was_updated_recently() {
     // Given
     let settings = AppSettings::new();
-    let (app, service) = create_router(settings);
+    let (app, service) = create_router(settings, None);
     {
         let mut last_updated = service.last_updated_at.write().await;
         *last_updated = Some(Utc::now());
@@ -42,7 +42,7 @@ async fn test_health_check_returns_200_if_cache_was_updated_recently() {
 async fn test_health_check_returns_503_if_cache_was_not_updated() {
     // Given
     let settings = AppSettings::new();
-    let (app, _service) = create_router(settings);
+    let (app, _service) = create_router(settings, None);
     let server = TestServer::new(app).unwrap();
     // last_updated_at is None by default
 
@@ -62,7 +62,7 @@ async fn test_health_check_returns_503_if_cache_was_not_updated() {
 async fn test_health_check_returns_503_if_cache_is_stale() {
     // Given
     let settings = AppSettings::new();
-    let (app, service) = create_router(settings);
+    let (app, service) = create_router(settings, None);
     {
         let mut last_updated = service.last_updated_at.write().await;
         *last_updated = Some(Utc::now() - chrono::Duration::days(10));
@@ -88,7 +88,7 @@ async fn test_health_check_returns_200_if_cache_is_never_stale() {
     settings.health_check = HealthCheckSettings {
         environment_update_grace_period_seconds: None,
     };
-    let (app, service) = create_router(settings);
+    let (app, service) = create_router(settings, None);
     let last_update_time = Utc::now() - chrono::Duration::days(10);
     {
         let mut last_updated = service.last_updated_at.write().await;

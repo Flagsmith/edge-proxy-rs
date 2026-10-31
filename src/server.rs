@@ -1,12 +1,17 @@
 use crate::config::AppSettings;
 use crate::config::logging::setup_logging;
+use crate::identities::IdentityStore;
 use crate::routes::create_router;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::sync::Arc;
 use tracing::{info, warn};
 
 const DEFAULT_HOST: IpAddr = IpAddr::V4(Ipv4Addr::UNSPECIFIED);
 
-pub async fn run(settings: AppSettings) -> anyhow::Result<()> {
+pub async fn run(
+    settings: AppSettings,
+    identity_store: Option<Arc<dyn IdentityStore>>,
+) -> anyhow::Result<()> {
     setup_logging(&settings.logging);
 
     info!("Starting Edge Proxy server...");
@@ -27,7 +32,7 @@ pub async fn run(settings: AppSettings) -> anyhow::Result<()> {
         );
     }
 
-    let (app, environment_service) = create_router(settings.clone());
+    let (app, environment_service) = create_router(settings.clone(), identity_store);
 
     // Refreshes must never overlap: a delayed older poll finishing after a
     // newer one could restore removed environments or rotated keys. The
