@@ -6,7 +6,7 @@ pub mod health;
 pub mod identities;
 
 use crate::config::AppSettings;
-use crate::identities::IdentityPersistence;
+use crate::identities::IdentityStore;
 use crate::services::EnvironmentService;
 use axum::{
     Router,
@@ -18,12 +18,12 @@ use tower_http::{compression::CompressionLayer, normalize_path::NormalizePath, t
 
 pub fn create_router(
     settings: AppSettings,
-    persistence: Option<Arc<dyn IdentityPersistence>>,
+    identity_store: Option<Arc<dyn IdentityStore>>,
 ) -> (Router, Arc<EnvironmentService>) {
     let cors = cors::layer(&settings.allow_origins);
     let environment_service = EnvironmentService::new(settings);
-    let environment_service = Arc::new(match persistence {
-        Some(persistence) => environment_service.with_identity_persistence(persistence),
+    let environment_service = Arc::new(match identity_store {
+        Some(identity_store) => environment_service.with_identity_store(identity_store),
         None => environment_service,
     });
 

@@ -1,6 +1,6 @@
 use crate::config::AppSettings;
 use crate::config::logging::setup_logging;
-use crate::identities::IdentityPersistence;
+use crate::identities::IdentityStore;
 use crate::routes::create_router;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
@@ -10,7 +10,7 @@ const DEFAULT_HOST: IpAddr = IpAddr::V4(Ipv4Addr::UNSPECIFIED);
 
 pub async fn run(
     settings: AppSettings,
-    persistence: Option<Arc<dyn IdentityPersistence>>,
+    identity_store: Option<Arc<dyn IdentityStore>>,
 ) -> anyhow::Result<()> {
     setup_logging(&settings.logging);
 
@@ -32,7 +32,7 @@ pub async fn run(
         );
     }
 
-    let (app, environment_service) = create_router(settings.clone(), persistence);
+    let (app, environment_service) = create_router(settings.clone(), identity_store);
 
     // Refreshes must never overlap: a delayed older poll finishing after a
     // newer one could restore removed environments or rotated keys. The

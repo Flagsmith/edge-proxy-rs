@@ -2,7 +2,7 @@ use crate::cache::{EnvironmentsCache, LocalMemEnvironmentsCache};
 use crate::config::settings::AppSettings;
 use crate::environments::{EnvironmentIndex, EnvironmentKeys};
 use crate::error::{EdgeProxyError, Result};
-use crate::identities::{IdentityPersistence, RequestOrigin};
+use crate::identities::{IdentityStore, RequestOrigin};
 use crate::models::{
     APIFeatureState, IdentityResponse, IdentityWithTraits, ProxyConfigEnvironment, TraitModel,
 };
@@ -24,7 +24,7 @@ pub struct EnvironmentService {
     pub settings: AppSettings,
     pub last_updated_at: Arc<RwLock<Option<DateTime<Utc>>>>,
     environments: EnvironmentIndex,
-    persistence: Option<Arc<dyn IdentityPersistence>>,
+    identity_store: Option<Arc<dyn IdentityStore>>,
 }
 
 impl EnvironmentService {
@@ -43,7 +43,7 @@ impl EnvironmentService {
             settings,
             last_updated_at: Arc::new(RwLock::new(None)),
             environments,
-            persistence: None,
+            identity_store: None,
         }
     }
 
@@ -53,8 +53,8 @@ impl EnvironmentService {
         service
     }
 
-    pub fn with_identity_persistence(mut self, persistence: Arc<dyn IdentityPersistence>) -> Self {
-        self.persistence = Some(persistence);
+    pub fn with_identity_store(mut self, identity_store: Arc<dyn IdentityStore>) -> Self {
+        self.identity_store = Some(identity_store);
         self
     }
 
@@ -350,7 +350,7 @@ impl EnvironmentService {
     ) -> Result<IdentityResponse> {
         let keys = self.resolve_key(environment_key)?;
 
-        let Some(persistence) = &self.persistence else {
+        let Some(identity_store) = &self.identity_store else {
             return self
                 .evaluate_identity(
                     &keys,
@@ -369,7 +369,7 @@ impl EnvironmentService {
             .ok_or_else(|| {
                 EdgeProxyError::ServiceUnavailable("Environment not loaded".to_string())
             })?;
-        let traits = persistence.load(&environment, identity).await;
+        let traits = identity_store.load_traits(&environment, identity).await;
         let response = self
             .evaluate_identity(
                 &keys,
@@ -385,7 +385,7 @@ impl EnvironmentService {
         } else {
             RequestOrigin::Server
         };
-        persistence.persist(&environment, identity, origin);
+        identity_store.save_traits(&environment, identity, origin);
 
         Ok(response)
     }

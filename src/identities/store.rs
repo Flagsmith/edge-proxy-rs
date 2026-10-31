@@ -2,14 +2,14 @@ use crate::models::{IdentityWithTraits, TraitModel};
 use async_trait::async_trait;
 
 #[async_trait]
-pub trait IdentityPersistence: Send + Sync {
-    async fn load(
+pub trait IdentityStore: Send + Sync {
+    async fn load_traits(
         &self,
         environment: &serde_json::Value,
         identity: &IdentityWithTraits,
     ) -> IdentityTraits;
 
-    fn persist(
+    fn save_traits(
         &self,
         environment: &serde_json::Value,
         identity: &IdentityWithTraits,

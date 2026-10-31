@@ -1,3 +1,3 @@
-pub mod persistence;
+pub mod store;
 
-pub use persistence::{IdentityPersistence, IdentityTraits, RequestOrigin};
+pub use store::{IdentityStore, IdentityTraits, RequestOrigin};
