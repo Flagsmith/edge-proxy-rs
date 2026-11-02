@@ -606,8 +606,9 @@ checksum = "645cbb3a84e60b7531617d5ae4e57f7e27308f6445f5abf653209ea76dec8dff"
 
 [[package]]
 name = "flagsmith-flag-engine"
-version = "0.6.1"
-source = "git+https://github.com/Flagsmith/flagsmith-rust-flag-engine?rev=92e19652b656f489769bdd62187a440f594a3c73#92e19652b656f489769bdd62187a440f594a3c73"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "797ae724ea5432a0c5b46d10a5abfb04694397c1e5e9d0c9f54b58c089f5d194"
 dependencies = [
  "chrono",
  "indexmap",
@@ -2162,7 +2163,7 @@ dependencies = [
  "cfg-if",
  "libc",
  "psm",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
