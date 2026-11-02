@@ -168,6 +168,41 @@ async fn test_get_flags__segment_needing_identity__returns_environment_default()
     assert_eq!(body["feature_state_value"], "2.3");
 }
 
+#[tokio::test]
+async fn test_get_flags__segment_depending_on_flag__returns_segment_override() {
+    // Given
+    let mut environment = environment_1();
+    environment["project"]["segments"] = json!([{
+        "id": 2,
+        "name": "feature_2_on",
+        "rules": [{
+            "type": "ALL",
+            "rules": [],
+            "conditions": [{"operator": "EQUAL", "property_": "$.flags.feature_2.enabled", "value": "true"}],
+        }],
+        "feature_states": [{
+            "multivariate_feature_state_values": [],
+            "feature_state_value": "segment_override",
+            "feature": {"name": "feature_1", "type": "STANDARD", "id": 1},
+            "enabled": true,
+            "featurestate_uuid": "uuid-segment-1",
+        }],
+    }]);
+    let server = setup_test_server_with_environment(environment).await;
+
+    // When
+    let response = server
+        .get("/api/v1/flags?feature=feature_1")
+        .add_header("X-Environment-Key", &environment_1_api_key())
+        .await;
+
+    // Then
+    response.assert_status_ok();
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["enabled"], true);
+    assert_eq!(body["feature_state_value"], "segment_override");
+}
+
 #[rstest]
 #[case::client_key(environment_1_api_key(), &["feature_1", "feature_2"])]
 #[case::server_key(environment_1_server_key(), &["feature_1", "feature_2", "feature_3"])]
@@ -237,6 +272,53 @@ async fn test_post_identity_with_override(
         .expect("feature_1 should be in response");
     assert_eq!(feature_1["feature_state_value"], "identity_override");
     assert_eq!(feature_1["enabled"], true);
+}
+
+#[rstest]
+#[case::flag_on_for_identity("overridden-id", "segment_override")]
+#[case::flag_off_for_identity("test_identity", "2.3")]
+#[tokio::test]
+async fn test_post_identity__segment_depending_on_flag__returns_value_by_identity_flag(
+    #[case] identifier: &str,
+    #[case] expected_value: &str,
+) {
+    // Given
+    let mut environment = environment_1();
+    environment["project"]["segments"] = json!([{
+        "id": 2,
+        "name": "feature_1_on",
+        "rules": [{
+            "type": "ALL",
+            "rules": [],
+            "conditions": [{"operator": "EQUAL", "property_": "$.flags.feature_1.enabled", "value": "true"}],
+        }],
+        "feature_states": [{
+            "multivariate_feature_state_values": [],
+            "feature_state_value": "segment_override",
+            "feature": {"name": "feature_2", "type": "STANDARD", "id": 2},
+            "enabled": true,
+            "featurestate_uuid": "uuid-segment-2",
+        }],
+    }]);
+    let server = setup_test_server_with_environment(environment).await;
+
+    // When
+    let response = server
+        .post("/api/v1/identities/")
+        .add_header("X-Environment-Key", &environment_1_api_key())
+        .json(&json!({"identifier": identifier, "traits": []}))
+        .await;
+
+    // Then
+    response.assert_status_ok();
+    let body: serde_json::Value = response.json();
+    let feature_2 = body["flags"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["feature"]["name"] == "feature_2")
+        .expect("feature_2 should be in response");
+    assert_eq!(feature_2["feature_state_value"], expected_value);
 }
 
 #[rstest]
