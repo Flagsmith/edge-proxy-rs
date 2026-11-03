@@ -300,7 +300,7 @@ impl EnvironmentService {
 
         let context = self
             .cache
-            .get_context(&keys.client_key)
+            .get_identity_free_context(&keys.client_key)
             .await
             .ok_or_else(|| {
                 EdgeProxyError::ServiceUnavailable("Environment not loaded".to_string())
