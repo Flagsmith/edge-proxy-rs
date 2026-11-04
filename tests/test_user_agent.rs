@@ -82,7 +82,9 @@ fn test_user_agent_is_name_slash_semver() {
     let version = EXPECTED_USER_AGENT
         .strip_prefix("flagsmith-edge-proxy/")
         .unwrap();
-    let parts: Vec<&str> = version.split('.').collect();
+    // Allow prerelease and build metadata, e.g. `0.3.0-rc.1+abc`.
+    let core = version.split(['-', '+']).next().unwrap();
+    let parts: Vec<&str> = core.split('.').collect();
     assert_eq!(parts.len(), 3);
     assert!(parts.iter().all(|p| p.parse::<u64>().is_ok()));
     assert_eq!(
