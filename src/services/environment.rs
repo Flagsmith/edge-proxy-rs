@@ -17,6 +17,10 @@ use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
+/// Identifies the proxy to the Flagsmith API, which breaks usage down by
+/// `User-Agent` in the form `<name>/<version>`.
+pub const USER_AGENT: &str = concat!("flagsmith-edge-proxy/", env!("CARGO_PKG_VERSION"));
+
 pub struct EnvironmentService {
     pub cache: Arc<dyn EnvironmentsCache>,
     client: Client,
@@ -30,6 +34,7 @@ impl EnvironmentService {
         let client = Client::builder()
             .timeout(Duration::from_secs(settings.api_poll_timeout_seconds))
             .gzip(true)
+            .user_agent(USER_AGENT)
             .build()
             .expect("Failed to create HTTP client");
 
