@@ -1,15 +1,22 @@
+#![allow(non_snake_case)]
+
 mod fixtures;
 
 use axum_test::TestServer;
 use edge_proxy::config::settings::{AppSettings, EnvironmentKeyPair};
 use edge_proxy::routes::create_router;
 use fixtures::*;
+use rstest::rstest;
 use serde_json::json;
 
 async fn setup_test_server() -> TestServer {
+    setup_test_server_with_environment(environment_1()).await
+}
+
+async fn setup_test_server_with_environment(environment: serde_json::Value) -> TestServer {
     let settings = AppSettings {
         environment_key_pairs: vec![EnvironmentKeyPair {
-            server_side_key: "ser.test_key".to_string(),
+            server_side_key: environment_1_server_key(),
             client_side_key: environment_1_api_key(),
         }],
         api_url: "http://test".to_string(),
@@ -21,28 +28,36 @@ async fn setup_test_server() -> TestServer {
     state
         .environments
         .cache
-        .put_environment(&environment_1_api_key(), environment_1())
+        .put_environment(&environment_1_api_key(), environment)
         .await;
 
     TestServer::new(app).unwrap()
 }
 
+#[rstest]
+#[case::client_key(environment_1_api_key(), &["feature_1", "feature_2"])]
+#[case::server_key(environment_1_server_key(), &["feature_1", "feature_2", "feature_3"])]
 #[tokio::test]
-async fn test_get_flags() {
+async fn test_get_flags(#[case] environment_key: String, #[case] expected_features: &[&str]) {
     // Given
     let server = setup_test_server().await;
 
     // When
     let response = server
         .get("/api/v1/flags")
-        .add_header("X-Environment-Key", &environment_1_api_key())
+        .add_header("X-Environment-Key", &environment_key)
         .await;
 
     // Then
     response.assert_status_ok();
     let body: serde_json::Value = response.json();
     let flags = body.as_array().unwrap();
-    assert_eq!(flags.len(), 2);
+    let mut feature_names: Vec<&str> = flags
+        .iter()
+        .map(|f| f["feature"]["name"].as_str().unwrap())
+        .collect();
+    feature_names.sort();
+    assert_eq!(feature_names, expected_features);
 
     let feature_1 = flags
         .iter()
@@ -61,15 +76,18 @@ async fn test_get_flags() {
     assert_eq!(feature_2["feature_state_value"], "2.3");
 }
 
+#[rstest]
 #[tokio::test]
-async fn test_get_flags_single_feature() {
+async fn test_get_flags_single_feature(
+    #[values(environment_1_api_key(), environment_1_server_key())] environment_key: String,
+) {
     // Given
     let server = setup_test_server().await;
 
     // When
     let response = server
         .get("/api/v1/flags?feature=feature_1")
-        .add_header("X-Environment-Key", &environment_1_api_key())
+        .add_header("X-Environment-Key", &environment_key)
         .await;
 
     // Then
@@ -118,7 +136,82 @@ async fn test_get_flags_unknown_key() {
 }
 
 #[tokio::test]
-async fn test_post_identity_with_traits() {
+async fn test_get_flags__segment_needing_identity__returns_environment_default() {
+    // Given
+    let mut environment = environment_1();
+    environment["project"]["segments"] = json!([{
+        "id": 2,
+        "name": "without_plan",
+        "rules": [{
+            "type": "ALL",
+            "rules": [],
+            "conditions": [{"operator": "IS_NOT_SET", "property_": "plan", "value": null}],
+        }],
+        "feature_states": [{
+            "multivariate_feature_state_values": [],
+            "feature_state_value": "segment_override",
+            "feature": {"name": "feature_2", "type": "STANDARD", "id": 2},
+            "enabled": true,
+            "featurestate_uuid": "uuid-segment-2",
+        }],
+    }]);
+    let server = setup_test_server_with_environment(environment).await;
+
+    // When
+    let response = server
+        .get("/api/v1/flags?feature=feature_2")
+        .add_header("X-Environment-Key", &environment_1_api_key())
+        .await;
+
+    // Then
+    response.assert_status_ok();
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["feature_state_value"], "2.3");
+}
+
+#[tokio::test]
+async fn test_get_flags__segment_depending_on_flag__returns_segment_override() {
+    // Given
+    let mut environment = environment_1();
+    environment["project"]["segments"] = json!([{
+        "id": 2,
+        "name": "feature_2_on",
+        "rules": [{
+            "type": "ALL",
+            "rules": [],
+            "conditions": [{"operator": "EQUAL", "property_": "$.flags.feature_2.enabled", "value": "true"}],
+        }],
+        "feature_states": [{
+            "multivariate_feature_state_values": [],
+            "feature_state_value": "segment_override",
+            "feature": {"name": "feature_1", "type": "STANDARD", "id": 1},
+            "enabled": true,
+            "featurestate_uuid": "uuid-segment-1",
+        }],
+    }]);
+    let server = setup_test_server_with_environment(environment).await;
+
+    // When
+    let response = server
+        .get("/api/v1/flags?feature=feature_1")
+        .add_header("X-Environment-Key", &environment_1_api_key())
+        .await;
+
+    // Then
+    response.assert_status_ok();
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["enabled"], true);
+    assert_eq!(body["feature_state_value"], "segment_override");
+}
+
+#[rstest]
+#[case::client_key(environment_1_api_key(), &["feature_1", "feature_2"])]
+#[case::server_key(environment_1_server_key(), &["feature_1", "feature_2", "feature_3"])]
+#[tokio::test]
+async fn test_post_identity_with_traits(
+    #[case] environment_key: String,
+    #[case] expected_features: &[&str],
+) {
     // Given
     let server = setup_test_server().await;
     let identity_data = json!({
@@ -131,7 +224,7 @@ async fn test_post_identity_with_traits() {
     // When
     let response = server
         .post("/api/v1/identities/")
-        .add_header("X-Environment-Key", &environment_1_api_key())
+        .add_header("X-Environment-Key", &environment_key)
         .json(&identity_data)
         .await;
 
@@ -140,20 +233,22 @@ async fn test_post_identity_with_traits() {
     let body: serde_json::Value = response.json();
     assert!(body["flags"].is_array());
     let flags = body["flags"].as_array().unwrap();
-    assert_eq!(flags.len(), 2);
     assert_eq!(body["traits"][0]["trait_key"], "email");
     assert_eq!(body["traits"][0]["trait_value"], "test@example.com");
 
-    let feature_names: Vec<&str> = flags
+    let mut feature_names: Vec<&str> = flags
         .iter()
         .map(|f| f["feature"]["name"].as_str().unwrap())
         .collect();
-    assert!(feature_names.contains(&"feature_1"));
-    assert!(feature_names.contains(&"feature_2"));
+    feature_names.sort();
+    assert_eq!(feature_names, expected_features);
 }
 
+#[rstest]
 #[tokio::test]
-async fn test_post_identity_with_override() {
+async fn test_post_identity_with_override(
+    #[values(environment_1_api_key(), environment_1_server_key())] environment_key: String,
+) {
     // Given
     let server = setup_test_server().await;
     let identity_data = json!({
@@ -164,7 +259,7 @@ async fn test_post_identity_with_override() {
     // When
     let response = server
         .post("/api/v1/identities/")
-        .add_header("X-Environment-Key", &environment_1_api_key())
+        .add_header("X-Environment-Key", &environment_key)
         .json(&identity_data)
         .await;
 
@@ -180,21 +275,78 @@ async fn test_post_identity_with_override() {
     assert_eq!(feature_1["enabled"], true);
 }
 
+#[rstest]
+#[case::flag_on_for_identity("overridden-id", "segment_override")]
+#[case::flag_off_for_identity("test_identity", "2.3")]
 #[tokio::test]
-async fn test_get_identities() {
+async fn test_post_identity__segment_depending_on_flag__returns_value_by_identity_flag(
+    #[case] identifier: &str,
+    #[case] expected_value: &str,
+) {
+    // Given
+    let mut environment = environment_1();
+    environment["project"]["segments"] = json!([{
+        "id": 2,
+        "name": "feature_1_on",
+        "rules": [{
+            "type": "ALL",
+            "rules": [],
+            "conditions": [{"operator": "EQUAL", "property_": "$.flags.feature_1.enabled", "value": "true"}],
+        }],
+        "feature_states": [{
+            "multivariate_feature_state_values": [],
+            "feature_state_value": "segment_override",
+            "feature": {"name": "feature_2", "type": "STANDARD", "id": 2},
+            "enabled": true,
+            "featurestate_uuid": "uuid-segment-2",
+        }],
+    }]);
+    let server = setup_test_server_with_environment(environment).await;
+
+    // When
+    let response = server
+        .post("/api/v1/identities/")
+        .add_header("X-Environment-Key", &environment_1_api_key())
+        .json(&json!({"identifier": identifier, "traits": []}))
+        .await;
+
+    // Then
+    response.assert_status_ok();
+    let body: serde_json::Value = response.json();
+    let feature_2 = body["flags"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["feature"]["name"] == "feature_2")
+        .expect("feature_2 should be in response");
+    assert_eq!(feature_2["feature_state_value"], expected_value);
+}
+
+#[rstest]
+#[case::client_key(environment_1_api_key(), &["feature_1", "feature_2"])]
+#[case::server_key(environment_1_server_key(), &["feature_1", "feature_2", "feature_3"])]
+#[tokio::test]
+async fn test_get_identities(#[case] environment_key: String, #[case] expected_features: &[&str]) {
     // Given
     let server = setup_test_server().await;
 
     // When
     let response = server
         .get("/api/v1/identities/?identifier=test_identity")
-        .add_header("X-Environment-Key", &environment_1_api_key())
+        .add_header("X-Environment-Key", &environment_key)
         .await;
 
     // Then
     response.assert_status_ok();
     let body: serde_json::Value = response.json();
-    assert!(body["flags"].is_array());
+    let mut feature_names: Vec<&str> = body["flags"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["feature"]["name"].as_str().unwrap())
+        .collect();
+    feature_names.sort();
+    assert_eq!(feature_names, expected_features);
     assert!(body["traits"].is_array());
     assert_eq!(body["traits"].as_array().unwrap().len(), 0);
 }

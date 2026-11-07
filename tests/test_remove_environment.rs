@@ -3,17 +3,16 @@ use edge_proxy::config::settings::{AppSettings, EnvironmentKeyPair};
 use edge_proxy::error::EdgeProxyError;
 use edge_proxy::models::IdentityWithTraits;
 use edge_proxy::services::environment::EnvironmentService;
+use rstest::rstest;
 use std::sync::Arc;
 
 mod fixtures;
-use fixtures::{environment_1, environment_1_api_key};
-
-const TEST_SERVER_KEY: &str = "ser.test_server_key";
+use fixtures::{environment_1, environment_1_api_key, environment_1_server_key};
 
 fn create_settings(client_key: &str) -> AppSettings {
     AppSettings {
         environment_key_pairs: vec![EnvironmentKeyPair {
-            server_side_key: TEST_SERVER_KEY.to_string(),
+            server_side_key: environment_1_server_key(),
             client_side_key: client_key.to_string(),
         }],
         api_url: "http://test.api".to_string(),
@@ -37,7 +36,12 @@ async fn test_removed_environment_rejects_client_and_server_keys() {
     // Given
     let (service, client_key) = create_loaded_service().await;
     assert!(service.get_environment(&client_key).await.is_ok());
-    assert!(service.get_environment(TEST_SERVER_KEY).await.is_ok());
+    assert!(
+        service
+            .get_environment(&environment_1_server_key())
+            .await
+            .is_ok()
+    );
 
     // When
     service.remove_environment(&client_key).await;
@@ -48,7 +52,7 @@ async fn test_removed_environment_rejects_client_and_server_keys() {
         Err(EdgeProxyError::FlagsmithUnknownKey(_))
     ));
     assert!(matches!(
-        service.get_environment(TEST_SERVER_KEY).await,
+        service.get_environment(&environment_1_server_key()).await,
         Err(EdgeProxyError::FlagsmithUnknownKey(_))
     ));
 }
@@ -59,7 +63,9 @@ async fn test_remove_by_server_key_removes_the_whole_environment() {
     let (service, client_key) = create_loaded_service().await;
 
     // When
-    service.remove_environment(TEST_SERVER_KEY).await;
+    service
+        .remove_environment(&environment_1_server_key())
+        .await;
 
     // Then
     assert!(matches!(
@@ -68,13 +74,16 @@ async fn test_remove_by_server_key_removes_the_whole_environment() {
     ));
 }
 
+#[rstest]
 #[tokio::test]
-async fn test_removed_key_is_rejected_by_flags() {
+async fn test_removed_key_is_rejected_by_flags(
+    #[values(environment_1_api_key(), environment_1_server_key())] environment_key: String,
+) {
     // Given
     let (service, client_key) = create_loaded_service().await;
     assert!(
         service
-            .get_flags_response_data(&client_key, None)
+            .get_flags_response_data(&environment_key, None)
             .await
             .is_ok()
     );
@@ -84,19 +93,24 @@ async fn test_removed_key_is_rejected_by_flags() {
 
     // Then
     assert!(matches!(
-        service.get_flags_response_data(&client_key, None).await,
+        service
+            .get_flags_response_data(&environment_key, None)
+            .await,
         Err(EdgeProxyError::FlagsmithUnknownKey(_))
     ));
 }
 
+#[rstest]
 #[tokio::test]
-async fn test_removed_key_is_rejected_by_identities() {
+async fn test_removed_key_is_rejected_by_identities(
+    #[values(environment_1_api_key(), environment_1_server_key())] environment_key: String,
+) {
     // Given
     let (service, client_key) = create_loaded_service().await;
     let identity = IdentityWithTraits::new("some-user".to_string());
     assert!(
         service
-            .get_identity_response_data(&identity, &client_key)
+            .get_identity_response_data(&identity, &environment_key)
             .await
             .is_ok()
     );
@@ -107,7 +121,7 @@ async fn test_removed_key_is_rejected_by_identities() {
     // Then
     assert!(matches!(
         service
-            .get_identity_response_data(&identity, &client_key)
+            .get_identity_response_data(&identity, &environment_key)
             .await,
         Err(EdgeProxyError::FlagsmithUnknownKey(_))
     ));
@@ -118,7 +132,12 @@ async fn test_removed_key_is_rejected_by_environment_document() {
     // Given
     let (service, client_key) = create_loaded_service().await;
     assert!(service.get_environment_bytes(&client_key).await.is_ok());
-    assert!(service.get_environment_bytes(TEST_SERVER_KEY).await.is_ok());
+    assert!(
+        service
+            .get_environment_bytes(&environment_1_server_key())
+            .await
+            .is_ok()
+    );
 
     // When
     service.remove_environment(&client_key).await;
@@ -129,7 +148,9 @@ async fn test_removed_key_is_rejected_by_environment_document() {
         Err(EdgeProxyError::FlagsmithUnknownKey(_))
     ));
     assert!(matches!(
-        service.get_environment_bytes(TEST_SERVER_KEY).await,
+        service
+            .get_environment_bytes(&environment_1_server_key())
+            .await,
         Err(EdgeProxyError::FlagsmithUnknownKey(_))
     ));
 }
