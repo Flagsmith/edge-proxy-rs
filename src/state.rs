@@ -1,4 +1,9 @@
-use crate::services::EnvironmentService;
+use crate::services::{EnvironmentService, UsageProcessor};
+use axum::extract::FromRef;
 use std::sync::Arc;
 
-pub type AppState = Arc<EnvironmentService>;
+#[derive(Clone, FromRef)]
+pub struct AppState {
+    pub environments: Arc<EnvironmentService>,
+    pub usage: Arc<UsageProcessor>,
+}

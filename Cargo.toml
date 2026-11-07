@@ -10,6 +10,7 @@ axum = { version = "0.8", features = ["macros"] }
 tokio = { version = "1", features = ["full"] }
 tower = "0.5"
 parking_lot = "0.12"
+uuid = { version = "1", features = ["v4"] }
 tower-http = { version = "0.6", features = ["compression-gzip", "cors", "trace", "normalize-path"] }
 reqwest = { version = "0.13", features = ["json", "gzip"] }
 serde = { version = "1", features = ["derive"] }

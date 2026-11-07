@@ -23,9 +23,10 @@ async fn setup_test_server_with_environment(environment: serde_json::Value) -> T
         ..AppSettings::new()
     };
 
-    let (app, service) = create_router(settings);
+    let (app, state) = create_router(settings);
 
-    service
+    state
+        .environments
         .cache
         .put_environment(&environment_1_api_key(), environment)
         .await;
@@ -360,8 +361,9 @@ async fn test_get_environment_document() {
         }],
         ..AppSettings::new()
     };
-    let (app, service) = create_router(settings);
-    service
+    let (app, state) = create_router(settings);
+    state
+        .environments
         .cache
         .put_environment("client_key", environment_1())
         .await;

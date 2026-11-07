@@ -1,14 +1,15 @@
 use crate::error::{EdgeProxyError, Result};
 use crate::routes::extractors::extract_environment_key;
-use crate::state::AppState;
+use crate::services::EnvironmentService;
 use axum::{
     extract::State,
     http::{HeaderMap, header},
     response::IntoResponse,
 };
+use std::sync::Arc;
 
 pub async fn get_environment_document(
-    State(service): State<AppState>,
+    State(service): State<Arc<EnvironmentService>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse> {
     let environment_key = extract_environment_key(&headers)?;
